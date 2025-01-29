@@ -500,7 +500,7 @@ elif pagina == "Análise de Budget":
             x="Valor",
             y="Projeto",
             orientation="h",
-            title="Top 20 Maiores Gastos de 2024",
+            title="Top 10 Maiores Gastos de 2024",
             labels={"Projeto": "Projetos", "Valor": "Gasto Total (R$)"},
             text_auto=True,
             category_orders={"Projeto": df_maiores_gastos["Projeto"].tolist()}  # Define a ordem correta das barras
