@@ -12,7 +12,9 @@ st.title("📊 Dashboard Financeiro")
 USER_CREDENTIALS = {
     "admin": "1234",
     "Maria Saraiva": "Wap@2024",
-    "MktWap": "Wap@2025" 
+    "MktWap": "Wap@2025",
+    "Jean": "Wap@2025",
+    "Tiago": "mkt@wap"
 }
 
 # Inicializa a sessão de login, se necessário
@@ -330,7 +332,7 @@ if pagina == "Visão Geral":
 
     # Garantir que o dataframe não está vazio após os filtros
     if not df_filtrado.empty:
-        st.subheader("📈 Evolução dos Valores por Área (Dinâmico com Filtros)")
+        st.subheader("📈 Evolução dos Valores Planejados por Área")
         
         # Agregar os valores por Fonte (Área) e Data (Mês)
         df_agrupado_area = df_filtrado.groupby(["Data", "Fonte"])["Valor"].sum().reset_index()
@@ -347,7 +349,7 @@ if pagina == "Visão Geral":
                 "Valor": "Total Gasto (R$)",
                 "Fonte": "Área"
             },
-            title="Comparação de Gastos Totais por Área (Dinâmico com Filtros)"
+            title="Comparação de Gastos Totais por Área"
         )
         
         # Exibir o gráfico
@@ -427,6 +429,89 @@ if pagina == "Visão Geral":
 
 
 elif pagina == "Análise de Budget":
+
+    @st.cache_data
+    def carregar_dados_2024(file_path):
+        """
+        Carrega e processa os dados da aba 2024.
+
+        Args:
+            file_path (str): Caminho do arquivo Excel.
+
+        Returns:
+            DataFrame: Dados processados da aba 2024 com os maiores gastos por projeto.
+        """
+        try:
+            # Carregar os dados
+            df_2024 = pd.read_excel(file_path, sheet_name="2024", header=1)
+
+            # Renomear colunas principais (ajuste conforme necessário)
+            df_2024.rename(columns={
+                df_2024.columns[1]: "Projeto",
+                df_2024.columns[2]: "Categoria",
+                df_2024.columns[3]: "Tipo",
+                df_2024.columns[4]: "Centro de Custo",
+                df_2024.columns[5]: "Marca",
+                df_2024.columns[6]: "Pilares",
+                df_2024.columns[7]: "Fixo/Variável"
+            }, inplace=True)
+
+            # Identificar colunas de meses (excluindo colunas de totalizações)
+            colunas_meses = [col for col in df_2024.columns[8:] if "TOTAL" not in str(col).upper()]
+
+            # Converter valores para numérico
+            for col in colunas_meses:
+                df_2024[col] = pd.to_numeric(df_2024[col], errors="coerce").fillna(0)
+
+            # Transformar os dados no formato longo
+            df_2024_melt = df_2024.melt(
+                id_vars=["Projeto", "Categoria", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"],
+                value_vars=colunas_meses,
+                var_name="Mês",
+                value_name="Valor"
+            )
+
+            # Converter a coluna de meses para formato de data
+            df_2024_melt["Mês"] = pd.to_datetime(df_2024_melt["Mês"], errors="coerce")
+
+            # Filtrar valores relevantes
+            df_2024_melt = df_2024_melt[df_2024_melt["Valor"] > 0]
+
+            return df_2024_melt
+
+        except Exception as e:
+            st.error(f"Erro ao carregar dados da aba 2024: {e}")
+            return pd.DataFrame()
+
+    # 📌 **Carregar dados da aba 2024**
+    df_2024 = carregar_dados_2024(arquivo_excel)
+
+    # 📊 **Gerar gráfico de maiores gastos**
+    if not df_2024.empty:
+        st.subheader("📊 Maiores Gastos do Ano de 2024")
+
+        # Somar os valores totais por projeto e ordenar pelos maiores gastos
+        df_maiores_gastos = df_2024.groupby("Projeto")["Valor"].sum().reset_index()
+        df_maiores_gastos = df_maiores_gastos.sort_values(by="Valor", ascending=False).head(10)  # Top 10 maiores gastos
+
+        # Criar o gráfico de barras horizontal
+        fig_maiores_gastos = px.bar(
+            df_maiores_gastos,
+            x="Valor",
+            y="Projeto",
+            orientation="h",
+            title="Top 20 Maiores Gastos de 2024",
+            labels={"Projeto": "Projetos", "Valor": "Gasto Total (R$)"},
+            text_auto=True,
+            category_orders={"Projeto": df_maiores_gastos["Projeto"].tolist()}  # Define a ordem correta das barras
+        )
+
+
+        # Exibir o gráfico no Streamlit
+        st.plotly_chart(fig_maiores_gastos, use_container_width=True)
+
+    else:
+        st.warning("Nenhum dado disponível para exibir os maiores gastos de 2024.")
     @st.cache_data
     def carregar_budget_fixos(file_path):
         """
