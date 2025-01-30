@@ -218,7 +218,7 @@ def calcular_soma_por_mes(arquivo_excel, abas_relevantes):
     return df_unificado.groupby(["Mês", "Fonte"])["Valor"].sum().reset_index()
 
 # Carregar dados
-arquivo_excel = "Orçamento - 2025 - Base - Copiar.xlsx"
+arquivo_excel = "Orçamento - 2025 - Base (3).xlsx"
 abas_relevantes = [" 2025 - MKT DE CONTEUDO ", " 2025 - MKT DE PRODUTO", " 2025 - Growth", " 2025 - Conteúdo", " 2025 - Mídia e Performance", "2025 - CX"]
 
 df_geral = carregar_dados(arquivo_excel, abas_relevantes) 
@@ -316,7 +316,7 @@ if pagina == "Visão Geral":
     st.dataframe(df_filtrado, use_container_width=True)
     
     # Carregar os dados da planilha
-    arquivo_excel = "Orçamento - 2025 - Base - Copiar.xlsx"
+    arquivo_excel = "Orçamento - 2025 - Base (3).xlsx"
     abas_relevantes = [" 2025 - MKT DE CONTEUDO ", " 2025 - MKT DE PRODUTO", " 2025 - Growth", " 2025 - Conteúdo", " 2025 - Mídia e Performance", "2025 - CX" ]
 
     # Calcular a soma dos valores por mês e aba
@@ -432,49 +432,32 @@ elif pagina == "Análise de Budget":
 
     @st.cache_data
     def carregar_dados_2024(file_path):
-        """
-        Carrega e processa os dados da aba 2024.
-
-        Args:
-            file_path (str): Caminho do arquivo Excel.
-
-        Returns:
-            DataFrame: Dados processados da aba 2024 com os maiores gastos por projeto.
-        """
+        """ Carrega e processa os dados da aba 2024. """
         try:
-            # Carregar os dados
             df_2024 = pd.read_excel(file_path, sheet_name="2024", header=1)
 
-            # Renomear colunas principais (ajuste conforme necessário)
             df_2024.rename(columns={
                 df_2024.columns[1]: "Projeto",
-                df_2024.columns[2]: "Categoria",
-                df_2024.columns[3]: "Tipo",
-                df_2024.columns[4]: "Centro de Custo",
-                df_2024.columns[5]: "Marca",
-                df_2024.columns[6]: "Pilares",
-                df_2024.columns[7]: "Fixo/Variável"
+                df_2024.columns[2]: "Tipo",
+                df_2024.columns[3]: "Centro de Custo",
+                df_2024.columns[4]: "Marca",
+                df_2024.columns[5]: "Pilares",
+                df_2024.columns[6]: "Fixo/Variável"
             }, inplace=True)
 
-            # Identificar colunas de meses (excluindo colunas de totalizações)
-            colunas_meses = [col for col in df_2024.columns[8:] if "TOTAL" not in str(col).upper()]
+            colunas_meses = [col for col in df_2024.columns[7:] if "TOTAL" not in str(col).upper()]
 
-            # Converter valores para numérico
             for col in colunas_meses:
                 df_2024[col] = pd.to_numeric(df_2024[col], errors="coerce").fillna(0)
 
-            # Transformar os dados no formato longo
             df_2024_melt = df_2024.melt(
-                id_vars=["Projeto", "Categoria", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"],
+                id_vars=["Projeto", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"],
                 value_vars=colunas_meses,
                 var_name="Mês",
                 value_name="Valor"
             )
 
-            # Converter a coluna de meses para formato de data
             df_2024_melt["Mês"] = pd.to_datetime(df_2024_melt["Mês"], errors="coerce")
-
-            # Filtrar valores relevantes
             df_2024_melt = df_2024_melt[df_2024_melt["Valor"] > 0]
 
             return df_2024_melt
@@ -483,204 +466,154 @@ elif pagina == "Análise de Budget":
             st.error(f"Erro ao carregar dados da aba 2024: {e}")
             return pd.DataFrame()
 
-    # 📌 **Carregar dados da aba 2024**
+    # 📌 Carregar dados da aba 2024
     df_2024 = carregar_dados_2024(arquivo_excel)
 
-    # 📊 **Gerar gráfico de maiores gastos**
+    # 📊 Gerar gráfico de maiores gastos
     if not df_2024.empty:
         st.subheader("📊 Maiores Gastos do Ano de 2024")
 
-        # Somar os valores totais por projeto e ordenar pelos maiores gastos
         df_maiores_gastos = df_2024.groupby("Projeto")["Valor"].sum().reset_index()
-        df_maiores_gastos = df_maiores_gastos.sort_values(by="Valor", ascending=False).head(10)  # Top 10 maiores gastos
+        df_maiores_gastos = df_maiores_gastos.sort_values(by="Valor", ascending=False).head(10)
 
-        # Criar o gráfico de barras horizontal
         fig_maiores_gastos = px.bar(
             df_maiores_gastos,
             x="Valor",
             y="Projeto",
             orientation="h",
-            title="Top 20 Maiores Gastos de 2024",
+            title="Top 10 Maiores Gastos de 2024",
             labels={"Projeto": "Projetos", "Valor": "Gasto Total (R$)"},
-            text_auto=True,
-            category_orders={"Projeto": df_maiores_gastos["Projeto"].tolist()}  # Define a ordem correta das barras
+            text_auto=True
         )
 
-
-        # Exibir o gráfico no Streamlit
         st.plotly_chart(fig_maiores_gastos, use_container_width=True)
-
     else:
         st.warning("Nenhum dado disponível para exibir os maiores gastos de 2024.")
+
+    # 📌 Carregar Budgets
     @st.cache_data
     def carregar_budget_fixos(file_path):
-        """
-        Carrega e processa os dados da aba BUDGET FIXOS.
-        
-        Args:
-            file_path (str): Caminho do arquivo Excel.
-            
-        Returns:
-            DataFrame: Dados processados da aba BUDGET FIXOS agrupados por Tipo.
-        """
-        # Carregar os dados
-        budget_fixos = pd.read_excel(file_path, sheet_name="BUDGET FIXOS", skiprows=1, header=0)
-        
-        # Ajustar as colunas
-        budget_fixos.rename(columns={budget_fixos.columns[0]: "Categoria", budget_fixos.columns[1]: "Tipo"}, inplace=True)
-        colunas_valores = budget_fixos.columns[2:]  # Colunas de valores mensais
-        
-        # Converter valores para numéricos
-        for col in colunas_valores:
-            budget_fixos[col] = pd.to_numeric(budget_fixos[col], errors="coerce").fillna(0)
-        
-        # Filtrar e somar os valores anuais por Tipo
-        budget_fixos = budget_fixos[budget_fixos["Categoria"].notna()]  # Remove linhas com Categoria vazia
-        gastos_fixos_anuais = budget_fixos.groupby("Tipo")[colunas_valores].sum()
-        gastos_fixos_anuais["Total Fixo"] = gastos_fixos_anuais.sum(axis=1)
-
-        return gastos_fixos_anuais.reset_index()
+        """ Carrega e processa os dados da aba BUDGET FIXOS. """
+        budget_fixos = pd.read_excel(file_path, sheet_name="BUDGET FIXOS")
+        budget_fixos = budget_fixos.rename(columns={"Unnamed: 1": "Tipo", budget_fixos.columns[2]: "Budget Disponível"})
+        budget_fixos = budget_fixos.dropna(subset=["Tipo", "Budget Disponível"])
+        return budget_fixos[["Tipo", "Budget Disponível"]]
 
     @st.cache_data
     def carregar_budget_variaveis(file_path):
-        """
-        Carrega e processa os dados da aba BUDGET VARIÁVEIS.
-        
-        Args:
-            file_path (str): Caminho do arquivo Excel.
-            
-        Returns:
-            DataFrame: Dados processados da aba BUDGET VARIÁVEIS agrupados por Tipo.
-        """
-        # Carregar os dados
-        budget_variaveis = pd.read_excel(file_path, sheet_name="BUDGET VARIÁVEIS", skiprows=1, header=0)
+        """ Carrega e processa os dados da aba BUDGET VARIÁVEIS. """
+        budget_variaveis = pd.read_excel(file_path, sheet_name="BUDGET VARIÁVEIS")
+        budget_variaveis = budget_variaveis.rename(columns={"Unnamed: 0": "Tipo", budget_variaveis.columns[1]: "Budget Disponível"})
+        budget_variaveis = budget_variaveis.dropna(subset=["Tipo", "Budget Disponível"])
+        return budget_variaveis[["Tipo", "Budget Disponível"]]
 
-        # Ajustar as colunas
-        budget_variaveis.rename(columns={budget_variaveis.columns[0]: "Tipo", budget_variaveis.columns[1]: "Valor"}, inplace=True)
-        
-        # Converter valores para numéricos
-        budget_variaveis["Valor"] = pd.to_numeric(budget_variaveis["Valor"], errors="coerce").fillna(0)
-        
-        # Filtrar e somar os valores anuais por Tipo
-        budget_variaveis = budget_variaveis[budget_variaveis["Tipo"].notna()]
-        gastos_variaveis_anuais = budget_variaveis.groupby("Tipo")["Valor"].sum().reset_index()
-        gastos_variaveis_anuais.rename(columns={"Valor": "Total Variável"}, inplace=True)
-
-        return gastos_variaveis_anuais
-
-    @st.cache_data
-    def carregar_valores_planejados(file_path, abas):
-        """
-        Carrega os valores planejados por Tipo e Categoria (Fixo ou Variável).
-        
-        Args:
-            file_path (str): Caminho do arquivo Excel.
-            abas (list): Lista de abas relevantes.
-        
-        Returns:
-            DataFrame: Valores planejados por Tipo e Categoria.
-        """
-        abas_disponiveis = pd.ExcelFile(file_path).sheet_names
-        dados_planejados = []
-
-        for aba in abas:
-            if aba in abas_disponiveis:
-                df = pd.read_excel(file_path, sheet_name=aba)
-                if "Tipo" in df.columns and "Categoria" in df.columns and "Valor" in df.columns:
-                    dados_planejados.append(df[["Tipo", "Categoria", "Valor"]])
-            else:
-                st.warning(f"A aba '{aba}' não foi encontrada e será ignorada.")
-
-        if dados_planejados:
-            return pd.concat(dados_planejados, ignore_index=True)
-        else:
-            return pd.DataFrame(columns=["Tipo", "Categoria", "Valor"])
-
-    # Carregar os dados
-    abas_relevantes = [" 2025 - MKT DE CONTEUDO ", " 2025 - MKT DE PRODUTO", " 2025 - Growth", " 2025 - Conteúdo", " 2025 - Mídia e Performance", "2025 - CX" ]
-    # Carregar os dados
+    # 📌 Carregar dados de Budget Fixo e Variável
     gastos_fixos = carregar_budget_fixos(arquivo_excel)
     gastos_variaveis = carregar_budget_variaveis(arquivo_excel)
-    valores_planejados = carregar_valores_planejados(arquivo_excel, abas_relevantes)
 
-    # Separar os dados planejados por Categoria (Fixo ou Variável)
-    planejado_fixos = valores_planejados[valores_planejados["Categoria"].str.lower() == "fixo"]
-    planejado_variaveis = valores_planejados[valores_planejados["Categoria"].str.lower() == "variável"]
+    # 📌 Comparação entre Budget e Planejado para 2025
+    st.subheader("📊 Comparação entre Budget Disponível e Valores Planejados")
 
-    # Comparação dos valores de Budget Fixo
+    df_planejado_resumo = df_geral.groupby(["Projeto", "Centro de Custo", "Fixo/Variável"])["Valor"].sum().reset_index()
+
+    df_planejado_resumo = df_geral.groupby(["Projeto", "Centro de Custo", "Fixo/Variável"])["Valor"].sum().reset_index()
+
+    # Separar os planejamentos fixos e variáveis
+    df_planejado_fixos = df_planejado_resumo[df_planejado_resumo["Fixo/Variável"].str.lower() == "fixo"].copy()
+    df_planejado_variaveis = df_planejado_resumo[df_planejado_resumo["Fixo/Variável"].str.lower() == "variável"].copy()
+
+    # Garantir que "Centro de Custo" e "Tipo" estão no mesmo formato (string) para o merge
+    df_planejado_fixos["Centro de Custo"] = df_planejado_fixos["Centro de Custo"].astype(str)
+    df_planejado_variaveis["Centro de Custo"] = df_planejado_variaveis["Centro de Custo"].astype(str)
+    gastos_fixos["Tipo"] = gastos_fixos["Tipo"].astype(str)
+    gastos_variaveis["Tipo"] = gastos_variaveis["Tipo"].astype(str)
+
+    # Comparação de valores fixos
     comparacao_fixos = pd.merge(
+        df_planejado_fixos.rename(columns={"Centro de Custo": "Tipo"}),
         gastos_fixos,
-        planejado_fixos,
         on="Tipo",
-        how="outer"
+        how="left"
     ).fillna(0)
-    comparacao_fixos["Diferença"] = comparacao_fixos["Valor"] - comparacao_fixos["Total Fixo"]
-    comparacao_fixos["Status"] = comparacao_fixos["Diferença"].apply(
-        lambda x: "Abaixo do orçamento" if x > 0 else ("Acima do orçamento" if x < 0 else "Dentro do orçamento")
-    )
 
-    # Comparação dos valores de Budget Variável
+    # Comparação de valores variáveis
     comparacao_variaveis = pd.merge(
+        df_planejado_variaveis.rename(columns={"Centro de Custo": "Tipo"}),
         gastos_variaveis,
-        planejado_variaveis,
         on="Tipo",
-        how="outer"
+        how="left"
     ).fillna(0)
-    comparacao_variaveis["Diferença"] = comparacao_variaveis["Valor"] - comparacao_variaveis["Total Variável"]
-    comparacao_variaveis["Status"] = comparacao_variaveis["Diferença"].apply(
-        lambda x: "Abaixo do orçamento" if x > 0 else ("Acima do orçamento" if x < 0 else "Dentro do orçamento")
-    )
 
-    # Exibição dos resultados na interface
-    st.subheader("📊 Comparação de Budget Fixo")
-    st.dataframe(comparacao_fixos, use_container_width=True)
+    # Criar status de orçamento
+    def definir_status(valor_planejado, budget_disponivel):
+        if valor_planejado > budget_disponivel:
+            return "🔴 Acima do Budget"
+        elif valor_planejado < budget_disponivel:
+            return "🟢 Abaixo do Budget"
+        else:
+            return "🟡 Dentro do Budget"
 
-    st.subheader("📊 Comparação de Budget Variável")
-    st.dataframe(comparacao_variaveis, use_container_width=True)
+    comparacao_fixos["Status"] = comparacao_fixos.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
+    comparacao_variaveis["Status"] = comparacao_variaveis.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
 
-    # Gráficos de Comparação - Budget Fixo
-    st.subheader("📈 Comparação Gráfica - Budget Fixo")
-    fig_comparacao_fixos = px.bar(
-        comparacao_fixos,
+    # Unir os dois DataFrames
+    comparacao_final = pd.concat([comparacao_fixos, comparacao_variaveis], ignore_index=True)
+
+    # 📋 Exibir tabela de comparação sem ace_tools
+    st.subheader("📋 Resumo Comparativo por Tipo")
+    st.dataframe(comparacao_final, use_container_width=True)
+    # Comparação de valores variáveis
+    comparacao_variaveis = pd.merge(
+        df_planejado_variaveis.rename(columns={"Centro de Custo": "Tipo"}),
+        gastos_variaveis,
+        on="Tipo",
+        how="left"
+    ).fillna(0)
+
+    comparacao_variaveis = pd.merge(
+        df_planejado_variaveis.rename(columns={"Centro de Custo": "Tipo"}),
+        gastos_variaveis,
+        on="Tipo",
+        how="left"
+    ).fillna(0)
+
+    # Criar status de orçamento
+    def definir_status(valor_planejado, budget_disponivel):
+        if valor_planejado > budget_disponivel:
+            return "🔴 Acima do Budget"
+        elif valor_planejado < budget_disponivel:
+            return "🟢 Abaixo do Budget"
+        else:
+            return "🟡 Dentro do Budget"
+
+    comparacao_fixos["Status"] = comparacao_fixos.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
+    comparacao_variaveis["Status"] = comparacao_variaveis.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
+
+    # Unir os dois DataFrames
+    comparacao_final = pd.concat([comparacao_fixos, comparacao_variaveis], ignore_index=True)
+
+    # 📋 Exibir tabela de comparação sem usar ace_tools
+    st.subheader("📋 Resumo Comparativo por Tipo")
+    st.dataframe(comparacao_final, use_container_width=True)
+
+    # 📊 Gráficos de Comparação
+    st.subheader("📊 Comparação Budget vs. Planejado")
+    fig_comparacao = px.bar(
+        comparacao_final,
         x="Tipo",
-        y=["Total Fixo", "Valor"],
+        y=["Valor", "Budget Disponível"],
         barmode="group",
-        title="Comparação de Budget Fixo",
-        labels={"value": "Valores (R$)", "Tipo": "Categorias de Tipo"},
-        text_auto=True
+        title="Comparação entre Budget e Planejado"
     )
-    st.plotly_chart(fig_comparacao_fixos, use_container_width=True)
+    st.plotly_chart(fig_comparacao, use_container_width=True)
 
-    # Gráficos de Comparação - Budget Variável
-    st.subheader("📈 Comparação Gráfica - Budget Variável")
-    fig_comparacao_variaveis = px.bar(
-        comparacao_variaveis,
-        x="Tipo",
-        y=["Total Variável", "Valor"],
-        barmode="group",
-        title="Comparação de Budget Variável",
-        labels={"value": "Valores (R$)", "Tipo": "Categorias de Tipo"},
-        text_auto=True
-    )
-    st.plotly_chart(fig_comparacao_variaveis, use_container_width=True)
-
-    # Gráficos de Diferenças
     st.subheader("📊 Diferença Entre Orçado e Planejado")
-
-    # Concatenar os DataFrames de fixos e variáveis
-    comparacao_total = pd.concat(
-        [comparacao_fixos.assign(Categoria="Fixo"), comparacao_variaveis.assign(Categoria="Variável")],
-        ignore_index=True
-    )
-
-    # Criar o gráfico de diferença
     fig_diferenca = px.bar(
-        comparacao_total,
+        comparacao_final,
         x="Tipo",
-        y="Diferença",
-        color="Categoria",
+        y="Valor",
+        color="Status",
         title="Diferença Entre Orçado e Planejado por Tipo",
-        labels={"Diferença": "Diferença (R$)", "Tipo": "Categorias de Tipo"},
         text_auto=True
     )
     st.plotly_chart(fig_diferenca, use_container_width=True)
