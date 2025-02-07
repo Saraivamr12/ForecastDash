@@ -1,201 +1,187 @@
 import streamlit as st
 import pandas as pd
+import requests
 import plotly.express as px
+import io
+from openpyxl import Workbook
 
-# Configurações iniciais
-st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
-st.title("📊 Dashboard Financeiro")
+# === 1. Função para gerar o Excel ===
+def gerar_excel(df):
+    """Cria um arquivo Excel em memória para download usando openpyxl."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Projetos_Consolidados")
+    output.seek(0)
+    return output
 
-# Função para carregar e processar as abas relevantes
+# === 2. Configuração do acesso à API do Notion ===
+notion_token = "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"
+
+# IDs das databases (tabelas)
+database_ids = {
+    "18f3a12b396281dd8ea9de22bc06609a": "MKT DE CONTEUDO",
+    "18f3a12b3962807586a4ff9a03c973a1": "MKT DE PRODUTO",
+    "1903a12b396280b7a0fecfbefa888f6c": "GROWTH",
+    "1903a12b396280a19027fbe1b1fa09f6": "CONTEÚDO",
+    "1903a12b396280e286c2ce0ff22e754f": "MÍDIA E PERFORMANCE",
+    "1903a12b3962801b85b9def5ecafbdf7": "CX"
+}
+
+NOTION_URL = "https://api.notion.com/v1/databases/{}/query"
+headers = {
+    "Authorization": f"Bearer {notion_token}",
+    "Notion-Version": "2022-06-28",
+    "Content-Type": "application/json"
+}
+
+# === 3. Extração dinâmica de valores ===
+def extract_value(prop, prop_type):
+    if prop is None:
+        return "" if prop_type in ["title", "rich_text", "select", "multi_select", "formula", "date"] else 0
+
+    if prop_type == "title":
+        return " ".join(frag.get("text", {}).get("content", "") for frag in prop.get("title", []))
+
+    elif prop_type == "rich_text":
+        return " ".join(frag.get("text", {}).get("content", "") for frag in prop.get("rich_text", []))
+
+    elif prop_type == "select":
+        return prop.get("select", {}).get("name", "")
+
+    elif prop_type == "multi_select":
+        return ", ".join(item.get("name", "") for item in prop.get("multi_select", []))
+
+    elif prop_type == "formula":
+        formula_obj = prop.get("formula", {})
+        return formula_obj.get(formula_obj.get("type", ""), "")
+
+    elif prop_type == "number":
+        return prop.get("number", 0)
+
+    elif prop_type == "date":
+        return prop.get("date", {}).get("start", "")
+
+    return str(prop)
+
+def extract_dynamic_value(prop):
+    if not prop:
+        return ""
+    return extract_value(prop, prop.get("type"))
+
+# === 4. Campos desejados ===
+desired_fields_text = ["Name", "CATEGORIA", "TIPO", "CENTRO DE CUSTOS", "MARCA", "PILARES", "FIXO/VARIÁVEL"]
+desired_fields_numeric = ["Jan/25", "Fev/25", "Mar/25", "Abr/25", "Mai/25",
+                          "Jun/25", "Jul/25", "Ago/25", "Set/25", "Out/25",
+                          "Nov/25", "Dez/25"]
+desired_fields = desired_fields_text + desired_fields_numeric
+
+# === 5. Coleta de dados da API ===
 @st.cache_data
-def carregar_dados(arquivo_excel, abas_relevantes):
-    dfs = []
-    for aba in abas_relevantes:
-        df = pd.read_excel(arquivo_excel, sheet_name=aba, header=1)
+def carregar_dados_api():
+    all_data = []
 
-        # Renomear colunas fixas
-        df = df.rename(columns={
-            df.columns[1]: "Projeto",
-            df.columns[2]: "Categoria",
-            df.columns[3]: "Tipo",
-            df.columns[4]: "Centro de Custo",
-            df.columns[5]: "Marca",
-            df.columns[6]: "Pilares",
-            df.columns[7]: "Fixo/Variável"
-        })
+    for db_id, table_name in database_ids.items():
+        has_more = True
+        next_cursor = None
 
-        # Remover linhas incompletas
-        df.dropna(subset=["Projeto", "Categoria", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"], inplace=True)
+        while has_more:
+            payload = {"page_size": 100}
+            if next_cursor:
+                payload["start_cursor"] = next_cursor
 
-        # Conversão segura para int
-        df["Centro de Custo"] = pd.to_numeric(df["Centro de Custo"], errors='coerce').fillna(0).astype(int)
+            try:
+                response = requests.post(NOTION_URL.format(db_id), headers=headers, json=payload)
+                if response.status_code != 200:
+                    st.error(f"Erro na API para {table_name}: {response.text}")
+                    return pd.DataFrame()
 
-        # Identificar as colunas dos meses
-        colunas_meses = [col for col in df.columns[8:] if 'TOTAL' not in str(col).upper()]
+                data = response.json()
+                results = data.get("results", [])
 
-        # Transformar os dados em formato longo (melt)
-        df_melt = df.melt(
-            id_vars=["Projeto", "Categoria", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"],
-            value_vars=colunas_meses,
-            var_name="Data",
-            value_name="Valor"
-        )
+                for result in results:
+                    properties = result.get("properties", {})
+                    row = {"Área": table_name}
+                    
+                    for field in desired_fields:
+                        row[field] = extract_dynamic_value(properties.get(field, {}))
 
-        df_melt.dropna(subset=["Valor"], inplace=True)
-        df_melt["Fonte"] = aba.strip()
-        dfs.append(df_melt)
+                    all_data.append(row)
 
-    return pd.concat(dfs, ignore_index=True)
+                has_more = data.get("has_more", False)
+                next_cursor = data.get("next_cursor", None)
 
-# Função para carregar a aba Calendário
-@st.cache_data
-def carregar_calendario(arquivo_excel):
-    df_calendario = pd.read_excel(arquivo_excel, sheet_name="Calendario")
-    df_calendario.columns = ["Mês", "Campanha", "Área"]
-    df_calendario.dropna(subset=["Mês", "Campanha"], inplace=True)
-    return df_calendario
+            except Exception as e:
+                st.error(f"Erro ao processar {table_name}: {e}")
+                break
 
-# Função para normalizar meses
-def normalizar_meses(mes):
-    meses_ref = {
-        "JAN": "JAN", "JANEIRO": "JAN",
-        "FEV": "FEB", "FEVEREIRO": "FEB",
-        "MAR": "MAR", "MARÇO": "MAR",
-        "ABR": "APR", "ABRIL": "APR",
-        "MAI": "MAY", "MAIO": "MAY",
-        "JUN": "JUN", "JUNHO": "JUN",
-        "JUL": "JUL", "JULHO": "JUL",
-        "AGO": "AUG", "AGOSTO": "AUG",
-        "SET": "SEP", "SETEMBRO": "SEP",
-        "OUT": "OCT", "OUTUBRO": "OCT",
-        "NOV": "NOV", "NOVEMBRO": "NOV",
-        "DEZ": "DEC", "DEZEMBRO": "DEC"
-    }
-    
-    meses = mes.replace(" ", "").split("/")
-    return [meses_ref.get(m.upper(), "") for m in meses]
+    if all_data:
+        df = pd.DataFrame(all_data)
 
-# Função para criar tabela estilo calendário
-def criar_tabela_calendario(df):
-    meses_ordem = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", 
-                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+        # Converter colunas numéricas corretamente
+        for col in desired_fields_numeric:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    linhas = []
-    for campanha in df["Campanha"].unique():
-        linha = {"Projeto": campanha}
-        meses_campanha = df[df["Campanha"] == campanha]["Mês"].apply(normalizar_meses).explode().unique()
-        for mes in meses_ordem:
-            linha[mes] = "✔️" if mes in meses_campanha else ""
-        linhas.append(linha)
+        df["Total_Projeto"] = df[desired_fields_numeric].sum(axis=1)
 
-    return pd.DataFrame(linhas)
+        # Ordenação padrão (Exemplo: pelo campo "Name")
+        df = df.sort_values(by="Name", ascending=True)
 
-@st.cache_data
-def carregar_valores_centro_custo(caminho_arquivo):
-    df = pd.read_excel(caminho_arquivo, sheet_name="Valores por Centro de Custo")
-    df.dropna(how="all", inplace=True)  # Remove linhas completamente vazias
-    return df
+        return df
+    else:
+        return pd.DataFrame()
 
-# Carregar dados
-arquivo_excel = "Orçamento - 2025 - Base - Copiar.xlsx"
-abas_relevantes = [" 2025 - MKT DE CONTEUDO ", " 2025 - MKT DE PRODUTO", " 2025 - Growth", " 2025 - Conteúdo", " 2025 - Mídia e Performance", "2025 - CX"]
+# === 6. Carregar os dados ===
+df_dados = carregar_dados_api()
 
-df_geral = carregar_dados(arquivo_excel, abas_relevantes)
-df_calendario = carregar_calendario(arquivo_excel)
+# === 7. Criar Dashboard no Streamlit ===
+st.title("📊 Dashboard Financeiro - Projetos")
 
-# Sidebar com navegação
-st.sidebar.title("Navegação")
-pagina = st.sidebar.radio("Escolha a visualização:", ["Visão Geral", "Calendário de Projetos"] + abas_relevantes)
+if df_dados.empty:
+    st.warning("⚠️ Nenhum dado carregado da API! Verifique as configurações.")
+    st.stop()
 
-# Filtro de Meses (exclusivo para Calendário de Projetos)
-meses_opcoes = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", 
-                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
-if pagina == "Calendário de Projetos":
-    filtro_meses = st.sidebar.multiselect("Selecione os meses:", options=meses_opcoes, default=meses_opcoes)
-else:
-    # Filtros Globais para as demais páginas
-    st.sidebar.header("Filtros Globais")
-    projetos = df_geral["Projeto"].dropna().unique()
-    categorias = df_geral["Categoria"].dropna().unique()
-    marcas = df_geral["Marca"].dropna().unique()
-    centroCusto = df_geral["Centro de Custo"].dropna().unique()
-    pilares = df_geral["Pilares"].dropna().unique()
-    tipoCusto = df_geral["Fixo/Variável"].dropna().unique()
-
-    filtro_projeto = st.sidebar.selectbox("Projeto", ["Todos"] + list(projetos))
-    filtro_categoria = st.sidebar.selectbox("Categoria", ["Todos"] + list(categorias))
-    filtro_marca = st.sidebar.selectbox("Marca", ["Todos"] + list(marcas))
-    filtro_centro_custo = st.sidebar.selectbox("Centro de Custo", ["Todos"] + list(centroCusto))
-    filtro_pilares = st.sidebar.selectbox("Pilares", ["Todos"] + list(pilares))
-    filtro_tipo_custo = st.sidebar.selectbox("Fixo/Variável", ["Todos"] + list(tipoCusto))
-
-    # Aplicação dos filtros
-    df_filtrado = df_geral.copy()
-    if filtro_projeto != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Projeto"] == filtro_projeto]
-    if filtro_categoria != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Categoria"] == filtro_categoria]
-    if filtro_marca != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Marca"] == filtro_marca]
-    if filtro_centro_custo != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Centro de Custo"] == int(filtro_centro_custo)]
-    if filtro_pilares != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Pilares"] == filtro_pilares]
-    if filtro_tipo_custo != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Fixo/Variável"] == filtro_tipo_custo]
-
-# VISÃO GERAL
-if pagina == "Visão Geral":
-    @st.cache_data
-    def carregar_big_numbers(caminho_arquivo):
-        df = pd.read_excel(caminho_arquivo, sheet_name="Geral")
-        big_numbers = {
-            "Total Gasto por Todas as Áreas": df.iloc[0, 0],
-            "Total Fixo para Todas as Áreas": df.iloc[0, 1],
-            "Total Variável em Todas as Áreas": df.iloc[0, 2],
-        }
-        return big_numbers
-
-
-    # Carregar os dados usando a variável arquivo_excel
-    big_numbers = carregar_big_numbers(arquivo_excel)
-
-    # Exibir os BIG NUMBERS com layout em colunas
+# === 8. Criando Filtros ===
+with st.expander("🔍 Filtros", expanded=False):
     col1, col2, col3 = st.columns(3)
+    filtro_area = col1.selectbox("Área", ["Todos"] + df_dados["Área"].dropna().unique().tolist())
+    filtro_categoria = col2.selectbox("Categoria", ["Todos"] + df_dados["CATEGORIA"].dropna().unique().tolist())
+    filtro_tipo = col3.selectbox("Tipo", ["Todos"] + df_dados["TIPO"].dropna().unique().tolist())
 
-    with col1:
-        st.metric(label="💰 Total Previsto para Todas as Áreas", 
-                value=f"R$ {big_numbers['Total Gasto por Todas as Áreas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    col4, col5, col6 = st.columns(3)
+    filtro_centro = col4.selectbox("Centro de Custos", ["Todos"] + df_dados["CENTRO DE CUSTOS"].dropna().unique().tolist())
+    filtro_marca = col5.selectbox("Marca", ["Todos"] + df_dados["MARCA"].dropna().unique().tolist())
+    filtro_pilares = col6.selectbox("Pilares", ["Todos"] + df_dados["PILARES"].dropna().unique().tolist())
 
-    with col2:
-        st.metric(label="📈 Total Fixo Previsto para Todas as Áreas", 
-                value=f"R$ {big_numbers['Total Fixo para Todas as Áreas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    filtro_fixo = st.selectbox("Fixo/Variável", ["Todos"] + df_dados["FIXO/VARIÁVEL"].dropna().unique().tolist())
 
-    with col3:
-        st.metric(label="📉 Total Variável Previsto em Todas as Áreas", 
-                value=f"R$ {big_numbers['Total Variável em Todas as Áreas']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    
 
+# === 9. Aplicação dos filtros ===
+df_filtrado = df_dados.copy()
 
-    st.subheader("📊 Projetos 2025 - Ordenados por Gasto")
-    st.dataframe(df_filtrado, use_container_width=True)
-    st.subheader("📈 Evolução dos Gastos Totais por Mês e Área")
-    df_agrupado = df_filtrado.groupby(["Data", "Fonte"])["Valor"].sum().reset_index()
-    fig_line = px.line(df_agrupado, x="Data", y="Valor", color="Fonte", markers=True)
-    st.plotly_chart(fig_line, use_container_width=True)
+if filtro_area != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["Área"] == filtro_area]
+if filtro_categoria != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["CATEGORIA"] == filtro_categoria]
+if filtro_tipo != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["TIPO"] == filtro_tipo]
+if filtro_centro != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["CENTRO DE CUSTOS"] == filtro_centro]
+if filtro_marca != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["MARCA"] == filtro_marca]
+if filtro_pilares != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["PILARES"] == filtro_pilares]
+if filtro_fixo != "Todos":
+    df_filtrado = df_filtrado[df_filtrado["FIXO/VARIÁVEL"] == filtro_fixo]
 
-    st.subheader("📊 Distribuição de Gastos Fixo vs Variável")
-    fig_pie = px.pie(df_filtrado, names="Fixo/Variável", values="Valor")
-    st.plotly_chart(fig_pie, use_container_width=True)
+# === 10. Exibição da Tabela ===
+st.subheader("📋 Dados Filtrados")
+st.data_editor(df_filtrado, use_container_width=True)
 
-elif pagina == "Calendário de Projetos":
-    st.subheader("📅 Calendário de Projetos 2025")
-    tabela_calendario = criar_tabela_calendario(df_calendario)
-    colunas_exibir = ["Projeto"] + filtro_meses
-    tabela_filtrada = tabela_calendario[colunas_exibir]
-    st.dataframe(tabela_filtrada, use_container_width=True)
-
-else:
-    st.header(f"📊 Análise Detalhada - {pagina}")
-    df_pagina = df_filtrado[df_filtrado["Fonte"] == pagina]
-    fig_pagina = px.bar(df_pagina, x="Data", y="Valor", color="Categoria")
-    st.plotly_chart(fig_pagina, use_container_width=True)
+# === 11. Botão de Download do Excel ===
+st.download_button(
+    label="📥 Baixar Planilha (XLSX)",
+    data=gerar_excel(df_filtrado),
+    file_name="projetos_consolidados.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
