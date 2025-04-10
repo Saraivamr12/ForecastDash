@@ -185,7 +185,7 @@ def carregar_dados_api():
 df_dados = carregar_dados_api()
 
 
-st.title("Dashboard Financeiro - Projetos")
+st.title("Controle Orçamentário - Marketing")
 # === 8. Sidebar para Seleção da Área com Radio Button ===
 abas_visiveis = [nome for nome in database_ids.values() if nome != "PROJETOS 2025"]
 area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
