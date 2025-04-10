@@ -453,7 +453,7 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
     )
 
     # Atualiza a cor das barras depois da criação
-    fig_comp.update_traces(marker_color="#00008B")
+    fig_comp.update_traces(marker_color="#B0C4DE")
 
     # Adiciona a linha do orçamento
     fig_comp.add_scatter(
@@ -464,7 +464,7 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
         line=dict(color="orange", width=3, dash="dot"),
         marker=dict(size=6, color="orange"),
         fill="tozeroy",  # 👉 isso adiciona o preenchimento até o zero
-        fillcolor="rgba(255,165,3.5)"  # cor laranja com transparência
+        fillcolor="rgba(255,165,1.5)"  # cor laranja com transparência
     )
 
     fig_comp.update_layout(
@@ -675,21 +675,6 @@ if area_selecionada == "Calendário de Projetos":
 
     df_tabela = carregar_tabela_notion()
 
-    with st.expander("🔍 Filtros", expanded=False):
-        colunas_filtraveis = [col for col in df_tabela.columns if df_tabela[col].nunique() > 1 and df_tabela[col].dtype == "object"]
-
-        filtros = {}
-        cols = st.columns(len(colunas_filtraveis) if len(colunas_filtraveis) < 4 else 3)
-
-        for i, col in enumerate(colunas_filtraveis):
-            opcoes = ["Todos"] + sorted(df_tabela[col].dropna().unique().tolist())
-            escolha = cols[i % 3].selectbox(f"{col}", opcoes, key=f"filtro_{col}")
-            filtros[col] = escolha
-
-        # Aplica os filtros no DataFrame
-        for coluna, valor in filtros.items():
-            if valor != "Todos":
-                df_tabela = df_tabela[df_tabela[coluna] == valor]
 
     if not df_tabela.empty:
         st.dataframe(df_tabela, use_container_width=True)
