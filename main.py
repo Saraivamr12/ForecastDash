@@ -186,9 +186,6 @@ df_dados = carregar_dados_api()
 
 
 st.title("Dashboard Financeiro - Projetos")
-# === 8. Sidebar para Seleção da Área com Radio Button ===
-abas_visiveis = [nome for nome in database_ids.values() if nome != "PROJETOS 2025"]
-area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
 
 def carregar_database_notion(database_id):
     dados = []
@@ -242,8 +239,27 @@ df_planejado = pd.concat(dfs_planejado, ignore_index=True)
 df_realizado = carregar_database_notion(REALIZADO_2025_ID)
 df_realizado["Área"] = "Todos"  # Adiciona a coluna faltante
 
+meses_planejado = [col for col in desired_fields_numeric if col in df_planejado.columns]
+df_planejado["Total_Projeto"] = df_planejado[meses_planejado].sum(axis=1)
+
+meses_realizado = [col for col in desired_fields_numeric if col in df_realizado.columns]
+df_realizado["Total_Projeto"] = df_realizado[meses_realizado].sum(axis=1)
+
+col1, col2, col3 = st.columns(3)
+
+planejado_fixo_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Fixo"]["Total_Projeto"].sum()
+planejado_variavel_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Variável"]["Total_Projeto"].sum()
+realizado_total = df_realizado["Total_Projeto"].sum()
+
+col1.metric("Planejado Fixo", f"R$ {planejado_fixo_total:,.2f}", help="Esse valor considera os projetos planejados que foram categorizados como despesa fixa.")
+col2.metric("Planejado Variável", f"R$ {planejado_variavel_total:,.2f}",  help="Esse valor considera os projetos planejados que foram categorizados como despesa variável. ")
+col3.metric("Realizado Total - YTD", f"R$ {realizado_total:,.2f}",  help="Esse valor considera todos os pagamentos realizados dentro dos Centros de Custos do Marketing até a data atual.")
+
 ORCAMENTO_2025_ID = "1d13a12b396280d69b2ff63228e2b0bf"
 df_orcamento_2025 = carregar_database_notion(ORCAMENTO_2025_ID)
+
+abas_visiveis = [nome for nome in database_ids.values() if nome != "2024"]
+area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
 
 @st.cache_data
 def carregar_base_2024():
@@ -398,17 +414,40 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
         df_merge["Realizado"] = pd.to_numeric(df_merge["Realizado"], errors="coerce").fillna(0)
 
         
-        fig = px.bar(df_barras, x="MÊS", y="Planejado", color="CATEGORIA",
-                     title=f"{tipo_custo} - Planejado por Categoria", barmode="relative",
-                     category_orders={"MÊS": meses_ordem})
+        cores_ordenadas = [
+            "#191970",  # Azul meia noite
+            "#483D8B",  # Azul escuro
+            "#4169E1",  # Azul 
+            "#B0C4DE",  # Azul aço
+            "#B0E0E6",  # Azul aço claro
+            "#E6E6FA",  # Coral
+            "#E0FFFF",
+            "#87CEEB",  # Vermelho escuro (adicionado com base na imagem)
+            "#ADD8E6",  # Light Salmon
+        ]
+
+        fig = px.bar(
+            df_barras,
+            x="MÊS",
+            y="Planejado",
+            color="CATEGORIA",
+            title=f"{tipo_custo} - Planejado por Categoria",
+            barmode="relative",
+            category_orders={"MÊS": meses_ordem},
+            color_discrete_sequence=cores_ordenadas
+        )
+
+        # Linha branca com marcadores pretos
         fig.add_scatter(
             x=df_merge["MÊS"],
             y=df_merge["Realizado"],
-            mode="lines+markers",  # linha + pontos
+            mode="lines+markers",
             name="Realizado",
-            line=dict(color="#2F4F4F", width=4),  # linha contínua e mais grossa
-            marker=dict(size=7, color="black")  # pontos pretos
+            line=dict(color="white", width=4),
+            marker=dict(size=7, color="black")
         )
+
+        # Ajustes do layout
         fig.update_layout(
             xaxis_title="Mês",
             yaxis_title="Valor (R$)",
@@ -453,7 +492,7 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
     )
 
     # Atualiza a cor das barras depois da criação
-    fig_comp.update_traces(marker_color="#00008B")
+    fig_comp.update_traces(marker_color="#9370DB")
 
     # Adiciona a linha do orçamento
     fig_comp.add_scatter(
@@ -461,8 +500,8 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
         y=df_orcado_melt["Orçado"],
         mode="lines+markers",
         name="Orçado",
-        line=dict(color="orange", width=3, dash="dot"),
-        marker=dict(size=6, color="orange"),
+        line=dict(color="#E6E6FA", width=3, dash="dot"),
+        marker=dict(size=6, color="#8A2BE2"),
         fill="tozeroy",  # 👉 isso adiciona o preenchimento até o zero
         fillcolor="rgba(255,165,3.5)"  # cor laranja com transparência
     )
@@ -506,16 +545,17 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
 
         if valor_realizado_mes > valor_orcado_mes:
             texto_variacao = f"📈 {variacao_percentual:.2f}% acima do orçado"
-            cor_delta = "normal"
+            cor_delta = "inverse"  # acima = vermelho
         else:
             texto_variacao = f"📉 {abs(variacao_percentual):.2f}% abaixo do orçado"
-            cor_delta = "inverse"
+            cor_delta = "normal"   # abaixo = verde
 
         st.metric(
             label=f"Diferença Realizado x Orçado ({mes_atual})",
             value=f"R$ {valor_realizado_mes:,.2f}",
             delta=texto_variacao,
-            delta_color=cor_delta
+            delta_color=cor_delta,
+            help="Essa projeção é calculada com base na diferença entre os pagamentos realizados e devidamente lançados no recebimento físcal com o valor orçado disponibilizado para o mês"
         )
     else:
         st.warning(f"❗ O mês atual ({mes_atual}) não está disponível nos dados.")
@@ -572,7 +612,7 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
         y="Valor",
         color="CATEGORIA",
         labels={"Data": "Mês", "Valor": "Custo (R$)", "CATEGORIA": "Categoria"},
-        title=f"Evolução dos Valores por Categoria - {area_selecionada}",
+        title=f"Evolução dos Valores por Categoria - {area_selecionada}", 
         hover_data=["CATEGORIA", "Data", "Valor", "Projeto_Área"] 
     )
 
@@ -674,7 +714,6 @@ if area_selecionada == "Calendário de Projetos":
     st.title("Calendário de Projetos")
 
     df_tabela = carregar_tabela_notion()
-
 
     if not df_tabela.empty:
         st.dataframe(df_tabela, use_container_width=True)
