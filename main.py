@@ -185,7 +185,7 @@ def carregar_dados_api():
 df_dados = carregar_dados_api()
 
 
-st.title("Dashboard Financeiro - Projetos")
+st.title("Controle Orçamentário - Marketing")
 
 def carregar_database_notion(database_id):
     dados = []
@@ -260,6 +260,9 @@ df_orcamento_2025 = carregar_database_notion(ORCAMENTO_2025_ID)
 
 abas_visiveis = [nome for nome in database_ids.values() if nome != "2024"]
 area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
+
+if st.sidebar.button("Recarregar Página"):
+    st.rerun()
 
 @st.cache_data
 def carregar_base_2024():
@@ -415,16 +418,32 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
 
         
         cores_ordenadas = [
-            "#191970",  # Azul meia noite
-            "#483D8B",  # Azul escuro
-            "#4169E1",  # Azul 
-            "#B0C4DE",  # Azul aço
-            "#B0E0E6",  # Azul aço claro
-            "#E6E6FA",  # Coral
-            "#E0FFFF",
-            "#87CEEB",  # Vermelho escuro (adicionado com base na imagem)
-            "#ADD8E6",  # Light Salmon
-        ]
+            "#241726",
+            "#301F33",
+            "#3B2640",
+            "#472E4D",
+            "#533659",
+            "#5F3D66",
+            "#6B4573",
+            "#774D80",
+            "#83548C",
+            "#8D5A97",
+            "#9966A3",
+            "#A273AB",
+            "#AA80B3",
+            "#B38CBA",
+            "#BB99C2",
+            "#C3A6C9",
+            "#CCB3D1",
+            "#D5BFD9"
+        
+        ]   
+
+        df_barras["CATEGORIA"] = pd.Categorical(
+            df_barras["CATEGORIA"],
+            categories=df_barras.groupby("CATEGORIA")["Planejado"].sum().sort_values(ascending=False).index.tolist()[::-1],  # Inverte
+            ordered=True
+        )
 
         fig = px.bar(
             df_barras,
@@ -443,7 +462,7 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
             y=df_merge["Realizado"],
             mode="lines+markers",
             name="Realizado",
-            line=dict(color="white", width=4),
+            line=dict(color="grey", width=4),
             marker=dict(size=7, color="black")
         )
 
@@ -540,25 +559,72 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
 
         if valor_orcado_mes > 0:
             variacao_percentual = ((valor_realizado_mes - valor_orcado_mes) / valor_orcado_mes) * 100
+            burn_rate_percentual = (valor_realizado_mes / valor_orcado_mes) * 100
         else:
             variacao_percentual = 0
+            burn_rate_percentual = 0
 
+        # Texto da diferença realizado x orçado
         if valor_realizado_mes > valor_orcado_mes:
-            texto_variacao = f"📈 {variacao_percentual:.2f}% acima do orçado"
-            cor_delta = "inverse"  # acima = vermelho
+            texto_variacao = f"⬆️ {variacao_percentual:.2f}% acima do orçado"
+            cor_variacao = "red"
         else:
-            texto_variacao = f"📉 {abs(variacao_percentual):.2f}% abaixo do orçado"
-            cor_delta = "normal"   # abaixo = verde
+            texto_variacao = f"⬇️ {abs(variacao_percentual):.2f}% abaixo do orçado"
+            cor_variacao = "green"
 
-        st.metric(
-            label=f"Diferença Realizado x Orçado ({mes_atual})",
-            value=f"R$ {valor_realizado_mes:,.2f}",
-            delta=texto_variacao,
-            delta_color=cor_delta,
-            help="Essa projeção é calculada com base na diferença entre os pagamentos realizados e devidamente lançados no recebimento físcal com o valor orçado disponibilizado para o mês"
-        )
-    else:
-        st.warning(f"❗ O mês atual ({mes_atual}) não está disponível nos dados.")
+        # Texto do burn rate
+        if burn_rate_percentual > 100:
+            texto_burn = f"📛 Acima do orçado ({burn_rate_percentual:.2f}%)"
+            cor_burn = "red"
+        elif burn_rate_percentual >= 90:
+            texto_burn = f"⚠️ Próximo do limite ({burn_rate_percentual:.2f}%)"
+            cor_burn = "orange"
+        else:
+            texto_burn = f"✅ Abaixo do orçado ({burn_rate_percentual:.2f}%)"
+            cor_burn = "green"
+
+
+        valor_restante = valor_orcado_mes - valor_realizado_mes
+        cor_restante = "green" if valor_restante >= 0 else "red"
+        texto_restante = "Disponível no orçamento" if valor_restante >= 0 else "Estouro do orçamento"
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="https://img.icons8.com/?size=100&id=igliuy55hqkp&format=png&color=000000" width="36">
+                    <div>
+                        <div style="font-size: 13px; color: gray;">Diferença Realizado x Orçado ({mes_atual})</div>
+                        <div style="font-size: 26px; font-weight: bold;">R$ {valor_realizado_mes:,.2f}</div>
+                        <div style="color: {cor_variacao}; font-size: 14px;">{texto_variacao}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col2:
+            st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="https://img.icons8.com/?size=100&id=3104&format=png&color=000000" width="36">
+                    <div>
+                        <div style="font-size: 13px; color: gray;"> Burn Rate ({mes_atual})</div>
+                        <div style="font-size: 26px; font-weight: bold;">{burn_rate_percentual:.2f}%</div>
+                        <div style="color: {cor_burn}; font-size: 14px;">{texto_burn}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col3:
+            st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="https://img.icons8.com/?size=100&id=2975&format=png&color=000000" width="36">
+                    <div>
+                        <div style="font-size: 13px; color: gray;"> Valor Restante ({mes_atual})</div>
+                        <div style="font-size: 26px; font-weight: bold;">R$ {valor_restante:,.2f}</div>
+                        <div style="color: {cor_restante}; font-size: 14px;">{texto_restante}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
         
 # 👉 Exibe os componentes apenas se NÃO for a aba "Calendário de Projetos"
 if area_selecionada not in ["Calendário de Projetos", "2024"]:

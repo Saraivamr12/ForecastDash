@@ -1,669 +1,946 @@
 import streamlit as st
 import pandas as pd
+import requests
 import plotly.express as px
-import plotly.graph_objects as go
-import plotly.subplots as sp
-import time
+import io
+from openpyxl import Workbook
+import datetime
 
-# Configurações iniciais
-st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
-st.title("📊 Dashboard Financeiro")
+# === 1. Função para gerar o Excel ===
+st.set_page_config(layout="wide")
 
-USER_CREDENTIALS = {
-    "admin": "1234",
-    "Maria Saraiva": "Wap@2024",
-    "MktWap": "Wap@2025",
-    "Jean": "Wap@2025",
-    "Tiago": "mkt@wap"
+def gerar_excel(df):
+    """Cria um arquivo Excel em memória para download usando openpyxl."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Projetos_Consolidados")
+    output.seek(0)
+    return output
+
+# === 2. Configuração do acesso à API do Notion ===
+notion_token = "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"
+
+# IDs das databases (tabelas)
+database_ids = {
+    "18f3a12b396281dd8ea9de22bc06609a": "MKT DE CONTEÚDO",
+    "18f3a12b3962807586a4ff9a03c973a1": "MKT DE PRODUTO",
+    "1903a12b396280b7a0fecfbefa888f6c": "GROWTH",
+    "1903a12b396280a19027fbe1b1fa09f6": "CONTEÚDO",
+    "1903a12b396280e286c2ce0ff22e754f": "MÍDIA E PERFORMANCE",
+    "1903a12b3962801b85b9def5ecafbdf7": "CX",
+    "1963a12b3962809ab3f2d7bc93c259fb": "2024"  
 }
 
-# Inicializa a sessão de login, se necessário
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-    st.session_state["username"] = ""
+REALIZADO_2025_ID = "1d03a12b396280569b55e2d2ba8f2ce4"
 
-if "welcome_shown" not in st.session_state:
-    st.session_state["welcome_shown"] = False  # Controle para exibir a mensagem apenas no primeiro login
 
-# --- FUNÇÃO DE LOGIN ---
-def login():
-    st.title("Login")
 
-    username = st.text_input("Usuário")
-    password = st.text_input("Senha", type="password")
+NOTION_URL = "https://api.notion.com/v1/databases/{}/query"
+headers = {
+    "Authorization": f"Bearer {notion_token}",
+    "Notion-Version": "2022-06-28",
+    "Content-Type": "application/json"
+}
 
-    if st.button("Entrar"):
-        if username in USER_CREDENTIALS and USER_CREDENTIALS[username] == password:
-            st.session_state["logged_in"] = True
-            st.session_state["username"] = username
-            st.rerun()
-        else:
-            st.error("Usuário ou senha incorretos")
 
-# Se o usuário **não** estiver logado, exibe apenas a página de login
-if not st.session_state["logged_in"]:
-    login()
-    st.stop()  # Interrompe a execução do código abaixo se o usuário não estiver autenticado
+# === 3. Função para extrair valores dinâmicos ===
+def extract_value(prop, prop_type):
+    if prop is None:
+        return "" if prop_type in ["title", "rich_text", "select", "multi_select", "formula", "date"] else 0
 
-# --- SE O USUÁRIO ESTIVER LOGADO, EXIBE O DASHBOARD ---
+    if prop_type == "title":
+        return " ".join(frag.get("text", {}).get("content", "") for frag in prop.get("title", []))
 
-if st.session_state["logged_in"] and not st.session_state["welcome_shown"]:
-    msg_container = st.sidebar.empty()
-    msg_container.success(f"✅ Bem-vindo, {st.session_state['username']}!")
-    st.session_state["welcome_shown"] = True
-    time.sleep(1)
-    msg_container.empty()
+    elif prop_type == "rich_text":
+        return " ".join(frag.get("text", {}).get("content", "") for frag in prop.get("rich_text", []))
 
-# Função para carregar e processar as abas relevantes@st.cache_data
+    elif prop_type == "select":
+        return prop.get("select", {}).get("name", "")
+
+    elif prop_type == "multi_select":
+        return ", ".join(item.get("name", "") for item in prop.get("multi_select", []))
+
+    elif prop_type == "formula":
+        formula_obj = prop.get("formula", {})
+        return formula_obj.get(formula_obj.get("type", ""), "")
+
+    elif prop_type == "number":
+        number = prop.get("number")
+        return number if isinstance(number, (int, float)) else 0
+
+
+    elif prop_type == "date":
+        return prop.get("date", {}).get("start", "")
+
+    return str(prop)
+
+def extract_dynamic_value(prop):
+    if not prop:
+        return ""
+    return extract_value(prop, prop.get("type"))
+
+# === 4. Campos desejados ===
+desired_fields_text = ["PROJETOS 2025", "CATEGORIA", "TIPO", "CENTRO DE CUSTOS", "MARCA", "PILARES", "FIXO/VARIÁVEL"]
+desired_fields_numeric = ["Jan/25", "Fev/25", "Mar/25", "Abr/25", "Mai/25",
+                        "Jun/25", "Jul/25", "Ago/25", "Set/25", "Out/25",
+                        "Nov/25", "Dez/25"]
+
+desired_fields_numeric_2024 = ["Jan/24", "Fev/24", "Mar/24", "Abr/24", "Mai/24",
+                               "Jun/24", "Jul/24", "Ago/24", "Set/24", "Out/24",
+                               "Nov/24", "Dez/24"]
+
+desired_fields = desired_fields_text + desired_fields_numeric 
+
+# === 5. Coleta de dados da API ===
 @st.cache_data
-def processar_aba(arquivo_excel, aba):
-    try:
-        # Carregar os dados da aba
-        df = pd.read_excel(arquivo_excel, sheet_name=aba, header=1)
+def carregar_dados_api():
+    all_data = []
 
-        # Verificar se o DataFrame foi carregado corretamente
-        if df.empty:
-            raise ValueError(f"A aba '{aba}' está vazia.")
+    for db_id, table_name in database_ids.items():
+        has_more = True
+        next_cursor = None  # ✅ Adicionado aqui
+        if table_name == "2024":
+            continue
 
-        # Validar número mínimo de colunas esperado
-        if len(df.columns) < 8:
-            raise ValueError(f"A aba '{aba}' não possui colunas suficientes para processamento.")
+        while has_more:
+            payload = {"page_size": 100}
+            if next_cursor:
+                payload["start_cursor"] = next_cursor
 
-        # Renomear colunas com validação
-        colunas_esperadas = ["Projeto", "Categoria", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"]
-        colunas_renomeadas = {df.columns[i + 1]: colunas_esperadas[i] for i in range(len(colunas_esperadas))}
+            try:
+                response = requests.post(NOTION_URL.format(db_id), headers=headers, json=payload)
+                if response.status_code != 200:
+                    st.error(f"Erro na API para {table_name}: {response.text}")
+                    return pd.DataFrame()
 
-        # Renomear colunas
-        df.rename(columns=colunas_renomeadas, inplace=True)
+                data = response.json()
+                results = data.get("results", [])
 
-        # Validar se todas as colunas necessárias estão presentes
-        colunas_faltando = [col for col in colunas_esperadas if col not in df.columns]
-        if colunas_faltando:
-            raise ValueError(f"As colunas esperadas estão ausentes na aba '{aba}': {colunas_faltando}")
+                for result in results:
+                    properties = result.get("properties", {})
+                    row = {"Área": table_name}
 
-        # Remover linhas onde todas as colunas principais estão vazias
-        df.dropna(subset=colunas_esperadas, how="all", inplace=True)
+                    # Seleciona os campos corretos para cada base
+                    if table_name == "2024":
+                        campos_numericos = desired_fields_numeric_2024
+                    else:
+                        campos_numericos = desired_fields_numeric
 
-        # Converter "Centro de Custo" para numérico
-        df["Centro de Custo"] = pd.to_numeric(df["Centro de Custo"], errors="coerce").fillna(0).astype(int)
+                    campos = desired_fields_text + campos_numericos
 
-        # Identificar colunas de meses (a partir da 8ª coluna)
-        colunas_meses = [col for col in df.columns[8:] if "TOTAL" not in str(col).upper()]
-        if not colunas_meses:
-            raise ValueError(f"Nenhuma coluna de mês válida encontrada na aba '{aba}'.")
+                    for field in campos:
+                        prop = properties.get(field, {})
+                        tipo = prop.get("type", "")
 
-        # Garantir que valores monetários nas colunas de meses estão no formato correto
-        for col in colunas_meses:
-            df[col] = pd.to_numeric(
-                df[col].astype(str).str.replace(",", ".").str.replace(" ", ""),
-                errors="coerce"
-            ).fillna(0)
+                        if tipo == "title":
+                            row[field] = " ".join([t["text"]["content"] for t in prop.get("title", [])])
+                        elif tipo == "rich_text":
+                            row[field] = " ".join([t["text"]["content"] for t in prop.get("rich_text", [])])
+                        elif tipo == "select":
+                            row[field] = prop.get("select", {}).get("name", "")
+                        elif tipo == "multi_select":
+                            row[field] = ", ".join([item.get("name", "") for item in prop.get("multi_select", [])])
+                        elif tipo == "date":
+                            row[field] = prop.get("date", {}).get("start", "")
+                        elif tipo == "number":
+                            value = prop.get("number")
+                            row[field] = value if isinstance(value, (int, float)) else 0
+                        elif tipo == "formula":
+                            formula = prop.get("formula", {})
+                            value = formula.get(formula.get("type", ""), 0)
+                            row[field] = value if isinstance(value, (int, float)) else 0
+                        else:
+                            row[field] = ""
 
-        # Transformar para formato longo (melt)
-        df_melt = df.melt(
-            id_vars=colunas_esperadas,
-            value_vars=colunas_meses,
-            var_name="Data",
-            value_name="Valor"
-        )
+                    all_data.append(row)
 
-        # Filtrar valores inválidos ou nulos
-        df_melt.dropna(subset=["Valor"], inplace=True)
+                has_more = data.get("has_more", False)
+                next_cursor = data.get("next_cursor", None)
 
-        # Adicionar coluna com o nome da aba
-        df_melt["Fonte"] = aba.strip()
+            except Exception as e:
+                st.error(f"Erro ao processar {table_name}: {e}")
+                break
 
-        # Retornar o DataFrame processado
-        return df_melt
+    if all_data:
+        df = pd.DataFrame(all_data)
 
-    except Exception as e:
-        st.error(f"Erro ao processar a aba '{aba}': {e}")
-        return pd.DataFrame()
-@st.cache_data
-def carregar_dados(arquivo_excel, abas_relevantes):
-    dfs = []
-    for aba in abas_relevantes:
-        df_melt = processar_aba(arquivo_excel, aba)
-        if not df_melt.empty:
-            dfs.append(df_melt)
-        else:
-            st.warning(f"A aba '{aba}' não foi processada corretamente e foi ignorada.")
+        # Converter colunas numéricas corretamente
+        for col in desired_fields_numeric + desired_fields_numeric_2024:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    if dfs:
-        return pd.concat(dfs, ignore_index=True)
+        # Criar a coluna de total se possível
+        colunas_soma = [col for col in desired_fields_numeric + desired_fields_numeric_2024 if col in df.columns]
+        if colunas_soma:
+            df["Total_Projeto"] = df[colunas_soma].sum(axis=1)
+
+        if "PROJETOS 2025" in df.columns:
+            df = df.sort_values(by="PROJETOS 2025", ascending=True)
+
+        return df
     else:
-        st.error("Nenhuma aba relevante foi processada com sucesso.")
         return pd.DataFrame()
-
-# Função para carregar a aba Calendário
-@st.cache_data
-def carregar_calendario(arquivo_excel):
-    df_calendario = pd.read_excel(arquivo_excel, sheet_name="Calendario")
-    df_calendario.columns = ["Mês", "Campanha", "Área"]
-    df_calendario.dropna(subset=["Mês", "Campanha"], inplace=True)
-    return df_calendario
-
-# Função para normalizar meses
-def normalizar_meses(mes):
-    meses_ref = {
-        "JAN": "JAN", "JANEIRO": "JAN",
-        "FEV": "FEB", "FEVEREIRO": "FEB",
-        "MAR": "MAR", "MARÇO": "MAR",
-        "ABR": "APR", "ABRIL": "APR",
-        "MAI": "MAY", "MAIO": "MAY",
-        "JUN": "JUN", "JUNHO": "JUN",
-        "JUL": "JUL", "JULHO": "JUL",
-        "AGO": "AUG", "AGOSTO": "AUG",
-        "SET": "SEP", "SETEMBRO": "SEP",
-        "OUT": "OCT", "OUTUBRO": "OCT",
-        "NOV": "NOV", "NOVEMBRO": "NOV",
-        "DEZ": "DEC", "DEZEMBRO": "DEC"
-    }
     
-    meses = mes.replace(" ", "").split("/")
-    return [meses_ref.get(m.upper(), "") for m in meses]
+# === 6. Carregar os dados ===
+df_dados = carregar_dados_api()
 
-# Função para criar tabela estilo calendário
-def criar_tabela_calendario(df):
-    meses_ordem = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", 
-                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
-    linhas = []
-    for campanha in df["Campanha"].unique():
-        linha = {"Projeto": campanha}
-        meses_campanha = df[df["Campanha"] == campanha]["Mês"].apply(normalizar_meses).explode().unique()
-        for mes in meses_ordem:
-            linha[mes] = "✔️" if mes in meses_campanha else ""
-        linhas.append(linha)
+st.title("Controle Orçamentário - Marketing")
 
-    return pd.DataFrame(linhas)
+def carregar_database_notion(database_id):
+    dados = []
+    has_more = True
+    next_cursor = None
+
+    while has_more:
+        payload = {"page_size": 100}
+        if next_cursor:
+            payload["start_cursor"] = next_cursor
+
+        response = requests.post(NOTION_URL.format(database_id), headers=headers, json=payload)
+        data = response.json()
+        results = data.get("results", [])
+
+        for result in results:
+            properties = result.get("properties", {})
+            linha = {}
+            for k, v in properties.items():
+                tipo = v.get("type")
+                if tipo == "title":
+                    linha[k] = " ".join([t["text"]["content"] for t in v["title"]])
+                elif tipo == "rich_text":
+                    linha[k] = " ".join([t["text"]["content"] for t in v["rich_text"]])
+                elif tipo == "select":
+                    linha[k] = v["select"]["name"] if v["select"] else ""
+                elif tipo == "number":
+                    linha[k] = v.get("number", 0)
+                elif tipo == "date":
+                    linha[k] = v.get("date", {}).get("start", "")
+                else:
+                    linha[k] = ""
+            dados.append(linha)
+
+        has_more = data.get("has_more", False)
+        next_cursor = data.get("next_cursor", None)
+
+    return pd.DataFrame(dados)
+
+# Carregar dados de todas as bases de planejamento (exceto 2024)
+dfs_planejado = []
+for db_id, nome_base in database_ids.items():
+    if nome_base == "2024":
+        continue  # pula a base 2024
+
+    df_temp = carregar_database_notion(db_id)
+    df_temp["Área"] = nome_base
+    dfs_planejado.append(df_temp)
+
+df_planejado = pd.concat(dfs_planejado, ignore_index=True)
+df_realizado = carregar_database_notion(REALIZADO_2025_ID)
+df_realizado["Área"] = "Todos"  # Adiciona a coluna faltante
+
+meses_planejado = [col for col in desired_fields_numeric if col in df_planejado.columns]
+df_planejado["Total_Projeto"] = df_planejado[meses_planejado].sum(axis=1)
+
+meses_realizado = [col for col in desired_fields_numeric if col in df_realizado.columns]
+df_realizado["Total_Projeto"] = df_realizado[meses_realizado].sum(axis=1)
+
+col1, col2, col3 = st.columns(3)
+
+planejado_fixo_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Fixo"]["Total_Projeto"].sum()
+planejado_variavel_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Variável"]["Total_Projeto"].sum()
+realizado_total = df_realizado["Total_Projeto"].sum()
+
+col1.metric("Planejado Fixo", f"R$ {planejado_fixo_total:,.2f}", help="Esse valor considera os projetos planejados que foram categorizados como despesa fixa.")
+col2.metric("Planejado Variável", f"R$ {planejado_variavel_total:,.2f}",  help="Esse valor considera os projetos planejados que foram categorizados como despesa variável. ")
+col3.metric("Realizado Total - YTD", f"R$ {realizado_total:,.2f}",  help="Esse valor considera todos os pagamentos realizados dentro dos Centros de Custos do Marketing até a data atual.")
+
+ORCAMENTO_2025_ID = "1d13a12b396280d69b2ff63228e2b0bf"
+df_orcamento_2025 = carregar_database_notion(ORCAMENTO_2025_ID)
+
+abas_visiveis = [nome for nome in database_ids.values() if nome != "2024"]
+area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
+
+if st.sidebar.button("Recarregar Página"):
+    st.rerun()
 
 @st.cache_data
-def carregar_valores_centro_custo(caminho_arquivo):
-    df = pd.read_excel(caminho_arquivo, sheet_name="Valores por Centro de Custo")
-    df.dropna(how="all", inplace=True)  # Remove linhas completamente vazias
-    return df
+def carregar_base_2024():
+    df_2024 = carregar_database_notion("1963a12b3962809ab3f2d7bc93c259fb")
+    df_2024["Área"] = "2024"
 
-def calcular_soma_por_mes(arquivo_excel, abas_relevantes):
-    dfs = []
-    for aba in abas_relevantes:
-        df = pd.read_excel(arquivo_excel, sheet_name=aba, header=1)
-        df.rename(columns={
-            df.columns[1]: "Projeto",
-            df.columns[2]: "Categoria",
-            df.columns[3]: "Tipo",
-            df.columns[4]: "Centro de Custo",
-            df.columns[5]: "Marca",
-            df.columns[6]: "Pilares",
-            df.columns[7]: "Fixo/Variável"
-        }, inplace=True)
+    df_2024.columns = [col.strip().replace(" ", "") if "/24" in col else col for col in df_2024.columns]
 
-        colunas_meses = [col for col in df.columns[8:] if "TOTAL" not in str(col).upper()]
-        df = df.melt(
-            id_vars=["Projeto", "Categoria", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"],
-            value_vars=colunas_meses,
-            var_name="Data",
-            value_name="Valor"
-        )
-        df.dropna(subset=["Valor"], inplace=True)
-        df["Valor"] = pd.to_numeric(df["Valor"], errors="coerce").fillna(0)
-        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-        df.dropna(subset=["Data"], inplace=True)
-        df["Fonte"] = aba.strip()
-        dfs.append(df)
+    for col in desired_fields_text:
+        if col not in df_2024.columns:
+            df_2024[col] = ""
 
-    df_unificado = pd.concat(dfs, ignore_index=True)
-    df_unificado["Mês"] = df_unificado["Data"].dt.to_period("M").astype(str)
+    for col in desired_fields_numeric_2024:
+        if col in df_2024.columns:
+            df_2024[col] = pd.to_numeric(df_2024[col], errors="coerce").fillna(0)
+        else:
+            df_2024[col] = 0
 
-    return df_unificado.groupby(["Mês", "Fonte"])["Valor"].sum().reset_index()
+    return df_2024
 
-# Carregar dados
-arquivo_excel = "Orçamento - 2025 - Base (3).xlsx"
-abas_relevantes = [" 2025 - MKT DE CONTEUDO ", " 2025 - MKT DE PRODUTO", " 2025 - Growth", " 2025 - Conteúdo", " 2025 - Mídia e Performance", "2025 - CX"]
+# === 6. Selecionar colunas com segurança ===
+def selecionar_colunas_existentes(df, meses):
+    colunas_base = ["Área"] + desired_fields_text
+    colunas_existentes = [col for col in colunas_base + meses if col in df.columns]
+    return df[colunas_existentes]
 
-df_geral = carregar_dados(arquivo_excel, abas_relevantes) 
-df_calendario = carregar_calendario(arquivo_excel)
-
-# Sidebar com navegação
-st.sidebar.title("Navegação")
-pagina = st.sidebar.radio("Escolha a visualização:", ["Visão Geral", "Calendário de Projetos", "Análise de Budget"] + abas_relevantes)
-
-# Filtro de Meses (exclusivo para Calendário de Projetos)
-meses_opcoes = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", 
-                "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
-if pagina == "Calendário de Projetos":
-    filtro_meses = st.sidebar.multiselect("Selecione os meses:", options=meses_opcoes, default=meses_opcoes)
+if area_selecionada == "2024":
+    df_dados_area = carregar_base_2024()
 else:
-    # Filtros Globais para as demais páginas
-    st.sidebar.header("Filtros Globais")
-    projetos = df_geral["Projeto"].dropna().unique()
-    categorias = df_geral["Categoria"].dropna().unique()
-    marcas = df_geral["Marca"].dropna().unique()
-    centroCusto = df_geral["Centro de Custo"].dropna().unique()
-    pilares = df_geral["Pilares"].dropna().unique()
-    tipoCusto = df_geral["Fixo/Variável"].dropna().unique()
+    df_dados_area = df_dados[df_dados["Área"] == area_selecionada].copy() if area_selecionada != "Todos" else df_dados[df_dados["Área"] != "2024"].copy()
 
-    filtro_projeto = st.sidebar.selectbox("Projeto", ["Todos"] + list(projetos))
-    filtro_categoria = st.sidebar.selectbox("Categoria", ["Todos"] + list(categorias))
-    filtro_marca = st.sidebar.selectbox("Marca", ["Todos"] + list(marcas))
-    filtro_centro_custo = st.sidebar.selectbox("Centro de Custo", ["Todos"] + list(centroCusto))
-    filtro_pilares = st.sidebar.selectbox("Pilares", ["Todos"] + list(pilares))
-    filtro_tipo_custo = st.sidebar.selectbox("Fixo/Variável", ["Todos"] + list(tipoCusto))
+# Aplica filtro final de segurança para remover 2024, mesmo que tenha vindo da origem por erro
+df_dados_area = df_dados_area[df_dados_area["Área"] != "2024"]
 
-    # Aplicação dos filtros
-    df_filtrado = df_geral.copy()
-    if filtro_projeto != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Projeto"] == filtro_projeto]
-    if filtro_categoria != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Categoria"] == filtro_categoria]
-    if filtro_marca != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Marca"] == filtro_marca]
-    if filtro_centro_custo != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Centro de Custo"] == int(filtro_centro_custo)]
-    if filtro_pilares != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Pilares"] == filtro_pilares]
-    if filtro_tipo_custo != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["Fixo/Variável"] == filtro_tipo_custo]
-
-st.sidebar.button("🔴 Logout", on_click=lambda: st.session_state.update({"logged_in": False, "username": ""}))
-
-
-def calcular_totais_area(df, area=None):
-    """
-    Calcula os valores totais, fixos e variáveis para uma área específica.
-    Se nenhuma área for especificada, calcula o total geral.
-    """
-    if area:
-        df_area = df[df["Fonte"] == area.strip()]
-    else:
-        df_area = df
-
-    total_area = df_area["Valor"].sum() if not df_area.empty else 0
-    total_fixo = df_area[df_area["Fixo/Variável"] == "Fixo"]["Valor"].sum() if not df_area.empty else 0
-    total_variavel = df_area[df_area["Fixo/Variável"] == "Variável"]["Valor"].sum() if not df_area.empty else 0
-
-    return total_area, total_fixo, total_variavel
-# VISÃO GERAL
-if pagina == "Visão Geral":
-    # Calcular os valores dinâmicos com base nos filtros aplicados
-    total_geral = df_filtrado["Valor"].sum()
-    total_fixo = df_filtrado[df_filtrado["Fixo/Variável"] == "Fixo"]["Valor"].sum()
-    total_variavel = df_filtrado[df_filtrado["Fixo/Variável"] == "Variável"]["Valor"].sum()
-
-    # Exibir os BIG NUMBERS com layout em colunas
+with st.expander("🔍 Filtros", expanded=False):
     col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            label="💰 Total Previsto para Todas as Áreas", 
-            value=f"R$ {total_geral:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-
-    with col2:
-        st.metric(
-            label="📈 Total Fixo Previsto para Todas as Áreas", 
-            value=f"R$ {total_fixo:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-
-    with col3:
-        st.metric(
-            label="📉 Total Variável Previsto em Todas as Áreas", 
-            value=f"R$ {total_variavel:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        )
-
-    st.subheader("📊 Projetos 2025 - Ordenados por Gasto")
-    st.caption("")    
-    st.dataframe(df_filtrado, use_container_width=True)
     
-    # Carregar os dados da planilha
-    arquivo_excel = "Orçamento - 2025 - Base (3).xlsx"
-    abas_relevantes = [" 2025 - MKT DE CONTEUDO ", " 2025 - MKT DE PRODUTO", " 2025 - Growth", " 2025 - Conteúdo", " 2025 - Mídia e Performance", "2025 - CX" ]
-
-    # Calcular a soma dos valores por mês e aba
-    df_agrupado = calcular_soma_por_mes(arquivo_excel, abas_relevantes)
-
-    # Ordenar os meses para garantir a exibição cronológica
-    df_agrupado = df_agrupado.sort_values("Mês")
-
-    # Gerar o gráfico de evolução de gastos
-# Aplicar os filtros no dataframe consolidado para o gráfico
-    df_agrupado_filtrado = df_agrupado.copy()
- 
-
-    # Garantir que o dataframe não está vazio após os filtros
-    if not df_filtrado.empty:
-        st.subheader("📈 Evolução dos Valores Planejados por Área")
-        
-        # Agregar os valores por Fonte (Área) e Data (Mês)
-        df_agrupado_area = df_filtrado.groupby(["Data", "Fonte"])["Valor"].sum().reset_index()
-        
-        # Gerar o gráfico de barras dinâmico com os valores por área
-        fig_bar_dinamico = px.bar(
-            df_agrupado_area,
-            x="Data",  # Eixo X (Datas, por exemplo)
-            y="Valor",  # Eixo Y (Valores filtrados)
-            color="Fonte",  # Barras separadas por Área
-            barmode="group",  # Barras agrupadas por mês
-            labels={
-                "Data": "Data",
-                "Valor": "Total Gasto (R$)",
-                "Fonte": "Área"
-            },
-            title="Comparação de Gastos Totais por Área"
-        )
-        
-        # Exibir o gráfico
-        st.plotly_chart(fig_bar_dinamico, use_container_width=True)
+    if area_selecionada == "Todos":
+        areas_disponiveis = sorted(df_planejado["Área"].dropna().unique())
+        areas_disponiveis = [a for a in areas_disponiveis if a != "2024"]
     else:
-        st.warning("Nenhum dado corresponde aos filtros aplicados.")
+        areas_disponiveis = [area_selecionada]
 
-    total_geral, fixo_geral, variavel_geral = calcular_totais_area(df_filtrado)
+    filtro_area = col1.selectbox("Área", ["Todos"] + areas_disponiveis)
 
-    # Criar a figura com subplots
-    fig = sp.make_subplots(
-        rows=1, cols=2,  # Dois gráficos lado a lado
-        specs=[[{"type": "polar"}, {"type": "polar"}]],  # Ambos são gráficos polares
-        subplot_titles=["Gastos Fixos", "Gastos Variáveis"]  # Títulos de cada gráfico
+    if "CATEGORIA" in df_dados_area.columns:
+        filtro_categoria = st.selectbox("Categoria", ["Todos"] + sorted(df_dados_area["CATEGORIA"].dropna().unique()))
+    else:
+        filtro_categoria = "Todos"
+
+    if "TIPO" in df_dados_area.columns:
+        filtro_tipo = col3.selectbox("Tipo", ["Todos"] + sorted(df_dados_area["TIPO"].dropna().unique()) if "TIPO" in df_dados_area.columns else ["Todos"])
+    else:
+        filtro_tipo = "Todos"
+
+    col4, col5, col6 = st.columns(3)
+
+    if "CENTRO DE CUSTOS" in df_dados_area.columns:
+        filtro_centro = col4.selectbox("Centro de Custos", ["Todos"] + sorted(df_dados_area["CENTRO DE CUSTOS"].dropna().unique()))
+    else:
+        filtro_centro = "Todos"
+
+    if "MARCA" in df_dados_area.columns:
+        filtro_marca = col5.selectbox("Marca", ["Todos"] + sorted(df_dados_area["MARCA"].dropna().unique()))
+    else:
+        filtro_marca = "Todos"
+
+    if "PILARES" in df_dados_area.columns:
+        filtro_pilares = col6.selectbox("Pilares", ["Todos"] + sorted(df_dados_area["PILARES"].dropna().unique()))
+    else:
+        filtro_pilares = "Todos"
+
+    if "FIXO/VARIÁVEL" in df_dados_area.columns:
+        filtro_fixo = st.selectbox("Fixo/Variável", ["Todos"] + sorted(df_dados_area["FIXO/VARIÁVEL"].dropna().unique()))
+    else:
+        filtro_fixo = "Todos"
+
+    meses_disponiveis = desired_fields_numeric_2024 if area_selecionada == "2024" else desired_fields_numeric
+    meses_selecionados = st.multiselect("📅 Selecione os meses", meses_disponiveis, default=meses_disponiveis[:12])
+# Aplicar filtros nos dataframes
+
+df_filtrado_planejado = df_planejado.copy()
+if filtro_area != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["Área"] == filtro_area]
+if filtro_categoria != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["CATEGORIA"] == filtro_categoria]
+if filtro_tipo != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["TIPO"] == filtro_tipo]
+if filtro_centro != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["CENTRO DE CUSTOS"] == filtro_centro]
+if filtro_marca != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["MARCA"] == filtro_marca]
+if filtro_pilares != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["PILARES"] == filtro_pilares]
+if filtro_fixo != "Todos":
+    df_filtrado_planejado = df_filtrado_planejado[df_filtrado_planejado["FIXO/VARIÁVEL"] == filtro_fixo]
+
+df_dados_area = df_dados_area[df_dados_area["Área"] != "2024"]
+
+
+if filtro_area == "Todos":
+    df_dados_area = df_dados_area[df_dados_area["Área"] != "2024"]
+# Criação do consolidado filtrado dos planejados
+df_filtrado = df_filtrado_planejado.copy()
+
+if area_selecionada == "2024":
+    meses_disponiveis = desired_fields_numeric_2024
+else:
+    meses_disponiveis = desired_fields_numeric
+
+# Realizado
+
+df_filtrado_realizado = df_realizado.copy()
+if filtro_fixo != "Todos" and "FIXO/VARIÁVEL" in df_filtrado_realizado.columns:
+    df_filtrado_realizado = df_filtrado_realizado[df_filtrado_realizado["FIXO/VARIÁVEL"] == filtro_fixo]
+
+# Gráficos comparativos (apenas na aba "Todos")
+if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_planejado.empty and not df_filtrado_realizado.empty:
+
+    meses_ordem = meses_selecionados
+    ordem_meses = {m: i for i, m in enumerate(meses_ordem)}
+
+
+    for tipo_custo in ["Fixo", "Variável"]:
+        st.subheader(f"Evolução Mensal de Gastos Planejados - {tipo_custo}")
+
+        df_filtro = df_filtrado_planejado[df_filtrado_planejado["FIXO/VARIÁVEL"] == tipo_custo]
+        df_barras = df_filtro.melt(
+            id_vars=["CATEGORIA"],
+            value_vars=[col for col in df_filtro.columns if col in meses_ordem],
+            var_name="MÊS",
+            value_name="Planejado"
+        ).groupby(["MÊS", "CATEGORIA"])["Planejado"].sum().reset_index()
+
+        df_realizado_match = df_filtrado_realizado.melt(
+            id_vars=["TÍTULO"] if "TÍTULO" in df_filtrado_realizado.columns else None,
+            value_vars=[col for col in df_filtrado_realizado.columns if col in meses_ordem],
+            var_name="MÊS",
+            value_name="Realizado"
+        ).groupby("MÊS", as_index=False)["Realizado"].sum()
+
+        df_total_planejado = df_barras.groupby("MÊS")["Planejado"].sum().reset_index()
+
+        df_total_planejado["ordem"] = df_total_planejado["MÊS"].map(ordem_meses)
+        df_realizado_match["ordem"] = df_realizado_match["MÊS"].map(ordem_meses)
+
+        df_total_planejado = df_total_planejado.sort_values("ordem")
+        df_realizado_match = df_realizado_match.sort_values("ordem")
+        df_merge = pd.merge(df_total_planejado.drop(columns=["ordem"]),
+                            df_realizado_match.drop(columns=["ordem"]),
+                            on="MÊS", how="left")
+        df_merge["Realizado"] = pd.to_numeric(df_merge["Realizado"], errors="coerce").fillna(0)
+
+        
+        cores_ordenadas = [
+            "#241726",
+            "#301F33",
+            "#3B2640",
+            "#472E4D",
+            "#533659",
+            "#5F3D66",
+            "#6B4573",
+            "#774D80",
+            "#83548C",
+            "#8D5A97",
+            "#9966A3",
+            "#A273AB",
+            "#AA80B3",
+            "#B38CBA",
+            "#BB99C2",
+            "#C3A6C9",
+            "#CCB3D1",
+            "#D5BFD9"
+        
+        ]   
+
+        df_barras["CATEGORIA"] = pd.Categorical(
+            df_barras["CATEGORIA"],
+            categories=df_barras.groupby("CATEGORIA")["Planejado"].sum().sort_values(ascending=False).index.tolist()[::-1],  # Inverte
+            ordered=True
+        )
+
+        fig = px.bar(
+            df_barras,
+            x="MÊS",
+            y="Planejado",
+            color="CATEGORIA",
+            title=f"{tipo_custo} - Planejado por Categoria",
+            barmode="relative",
+            category_orders={"MÊS": meses_ordem},
+            color_discrete_sequence=cores_ordenadas
+        )
+
+        # Linha branca com marcadores pretos
+        fig.add_scatter(
+            x=df_merge["MÊS"],
+            y=df_merge["Realizado"],
+            mode="lines+markers",
+            name="Realizado",
+            line=dict(color="grey", width=4),
+            marker=dict(size=7, color="black")
+        )
+
+        # Ajustes do layout
+        fig.update_layout(
+            xaxis_title="Mês",
+            yaxis_title="Valor (R$)",
+            legend_title="Legenda"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    orcado_2025_id = "1d13a12b396280d69b2ff63228e2b0bf"
+    df_orcado = carregar_database_notion(orcado_2025_id)
+
+    # Converte colunas para numérico
+    for col in desired_fields_numeric:
+        if col in df_orcado.columns:
+            df_orcado[col] = pd.to_numeric(df_orcado[col], errors="coerce").fillna(0)
+        if col in df_realizado.columns:
+            df_realizado[col] = pd.to_numeric(df_realizado[col], errors="coerce").fillna(0)
+
+    # Soma por mês
+    df_orcado_melt = df_orcado.melt(value_vars=desired_fields_numeric, var_name="Mês", value_name="Orçado")
+    df_orcado_melt = df_orcado_melt.groupby("Mês", as_index=False).sum()
+
+    df_realizado_melt = df_realizado.melt(value_vars=desired_fields_numeric, var_name="Mês", value_name="Realizado")
+    df_realizado_melt = df_realizado_melt.groupby("Mês", as_index=False).sum()
+
+    # Ordena meses
+    ordem_meses = {m: i for i, m in enumerate(desired_fields_numeric)}
+    df_realizado_melt["ordem"] = df_realizado_melt["Mês"].map(ordem_meses)
+    df_orcado_melt["ordem"] = df_orcado_melt["Mês"].map(ordem_meses)
+
+    df_realizado_melt = df_realizado_melt.sort_values("ordem")
+    df_orcado_melt = df_orcado_melt.sort_values("ordem")
+
+    st.subheader("Ano Atual YTD - Real X Planejado")
+    # Gráfico
+    fig_comp = px.bar(
+        df_realizado_melt,
+        x="Mês",
+        y="Realizado",
+        title="Realizado X Orçado - 2025",
+        labels={"Realizado": "Valor (R$)"}
     )
 
-    # Adicionar ponto para "Fixo"
-    fig.add_trace(
-        go.Scatterpolar(
-            r=[fixo_geral],  # Valor de "Fixo"
-            theta=["Fixo"],
-            mode="markers",
-            marker=dict(size=20, color="#636EFA", symbol="circle"),  # Azul para fixo
-            name="Fixo"
-        ),
-        row=1, col=1
+    # Atualiza a cor das barras depois da criação
+    fig_comp.update_traces(marker_color="#9370DB")
+
+    # Adiciona a linha do orçamento
+    fig_comp.add_scatter(
+        x=df_orcado_melt["Mês"],
+        y=df_orcado_melt["Orçado"],
+        mode="lines+markers",
+        name="Orçado",
+        line=dict(color="#E6E6FA", width=3, dash="dot"),
+        marker=dict(size=6, color="#8A2BE2"),
+        fill="tozeroy",  # 👉 isso adiciona o preenchimento até o zero
+        fillcolor="rgba(255,165,3.5)"  # cor laranja com transparência
     )
 
-    # Adicionar ponto para "Variável"
-    fig.add_trace(
-        go.Scatterpolar(
-            r=[variavel_geral],  # Valor de "Variável"
-            theta=["Variável"],
-            mode="markers",
-            marker=dict(size=20, color="#00CC96", symbol="circle"),  # Verde para variável
-            name="Variável"
-        ),
-        row=1, col=2
+    fig_comp.update_layout(
+        xaxis_title="Mês",
+        yaxis_title="Total (R$)",
+        legend_title="Legenda"
     )
 
-    # Configurar layout do gráfico polar
-    fig.update_layout(
-        title="📊 Gastos Fixo e Variável - Pontos no Polar",
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, total_geral * 1.2],  # Ajustar escala radial com margem de 20%
-                showline=True,  # Mostrar linha da grade
-                color="black",  # Cor das linhas da grade
-                tickfont=dict(color="black")  # Cor dos ticks e valores
-            ),
-            angularaxis=dict(
-                color="black",  # Cor das linhas angulares
-                tickfont=dict(color="black")  # Cor dos ticks e valores
-            )
-        ),
-        polar2=dict(  # Configurações para o segundo gráfico polar
-            radialaxis=dict(
-                visible=True,
-                range=[0, total_geral * 1.2],  # Ajustar escala radial com margem de 20%
-                showline=True,  # Mostrar linha da grade
-                color="black",  # Cor das linhas da grade
-                tickfont=dict(color="black")  # Cor dos ticks e valores
-            ),
-            angularaxis=dict(
-                color="black",  # Cor das linhas angulares
-                tickfont=dict(color="black")  # Cor dos ticks e valores
-            )
-        ),
-        height=400,
-        template="plotly_white"
+    st.plotly_chart(fig_comp, use_container_width=True)
+
+    # === Cálculo de variação percentual do mês atual ===
+    meses_map = {
+        "Jan": "Jan/25",
+        "Feb": "Fev/25",
+        "Mar": "Mar/25",
+        "Apr": "Abr/25",
+        "May": "Mai/25",
+        "Jun": "Jun/25",
+        "Jul": "Jul/25",
+        "Aug": "Ago/25",
+        "Sep": "Set/25",
+        "Oct": "Out/25",
+        "Nov": "Nov/25",
+        "Dec": "Dez/25"
+    }
+
+    # Obtem mês atual no formato correto
+    mes_ingles = datetime.datetime.today().strftime("%b")
+    mes_atual = meses_map.get(mes_ingles)
+
+    if mes_atual in desired_fields_numeric:
+        valor_realizado_mes = df_realizado[mes_atual].sum()
+        valor_orcado_mes = df_orcado[mes_atual].sum()
+
+        if valor_orcado_mes > 0:
+            variacao_percentual = ((valor_realizado_mes - valor_orcado_mes) / valor_orcado_mes) * 100
+            burn_rate_percentual = (valor_realizado_mes / valor_orcado_mes) * 100
+        else:
+            variacao_percentual = 0
+            burn_rate_percentual = 0
+
+        # Texto da diferença realizado x orçado
+        if valor_realizado_mes > valor_orcado_mes:
+            texto_variacao = f"⬆️ {variacao_percentual:.2f}% acima do orçado"
+            cor_variacao = "red"
+        else:
+            texto_variacao = f"⬇️ {abs(variacao_percentual):.2f}% abaixo do orçado"
+            cor_variacao = "green"
+
+        # Texto do burn rate
+        if burn_rate_percentual > 100:
+            texto_burn = f"📛 Acima do orçado ({burn_rate_percentual:.2f}%)"
+            cor_burn = "red"
+        elif burn_rate_percentual >= 90:
+            texto_burn = f"⚠️ Próximo do limite ({burn_rate_percentual:.2f}%)"
+            cor_burn = "orange"
+        else:
+            texto_burn = f"✅ Abaixo do orçado ({burn_rate_percentual:.2f}%)"
+            cor_burn = "green"
+
+
+        valor_restante = valor_orcado_mes - valor_realizado_mes
+        cor_restante = "green" if valor_restante >= 0 else "red"
+        texto_restante = "Disponível no orçamento" if valor_restante >= 0 else "Estouro do orçamento"
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="https://img.icons8.com/?size=100&id=igliuy55hqkp&format=png&color=000000" width="36">
+                    <div>
+                        <div style="font-size: 13px; color: gray;">Diferença Realizado x Orçado ({mes_atual})</div>
+                        <div style="font-size: 26px; font-weight: bold;">R$ {valor_realizado_mes:,.2f}</div>
+                        <div style="color: {cor_variacao}; font-size: 14px;">{texto_variacao}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col2:
+            st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="https://img.icons8.com/?size=100&id=3104&format=png&color=000000" width="36">
+                    <div>
+                        <div style="font-size: 13px; color: gray;"> Burn Rate ({mes_atual})</div>
+                        <div style="font-size: 26px; font-weight: bold;">{burn_rate_percentual:.2f}%</div>
+                        <div style="color: {cor_burn}; font-size: 14px;">{texto_burn}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+        with col3:
+            st.markdown(f"""
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <img src="https://img.icons8.com/?size=100&id=2975&format=png&color=000000" width="36">
+                    <div>
+                        <div style="font-size: 13px; color: gray;"> Valor Restante ({mes_atual})</div>
+                        <div style="font-size: 26px; font-weight: bold;">R$ {valor_restante:,.2f}</div>
+                        <div style="color: {cor_restante}; font-size: 14px;">{texto_restante}</div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+        
+# 👉 Exibe os componentes apenas se NÃO for a aba "Calendário de Projetos"
+if area_selecionada not in ["Calendário de Projetos", "2024"]:
+    colunas_existentes = ["Área"] + desired_fields_text + [col for col in meses_selecionados if col in df_filtrado.columns]
+    df_filtrado = df_filtrado[colunas_existentes]
+
+    st.subheader(f"Detalhamento por Área: {area_selecionada}")
+
+    if area_selecionada not in ["Todos", "Calendário de Projetos"]:
+        df_filtrado = df_filtrado[df_filtrado["Área"] == area_selecionada]
+
+# Oculta a coluna "PROJETOS 2025" apenas na aba 2024
+    if area_selecionada == "2024" and "PROJETOS 2025" in df_filtrado.columns:
+        df_filtrado = df_filtrado.drop(columns=["PROJETOS 2025"])
+
+    st.data_editor(df_filtrado, use_container_width=True)
+
+    colunas_validas = ["Área"] + [m for m in meses_selecionados if m in df_filtrado.columns]
+    df_gastos_mensais = df_filtrado[colunas_validas].set_index("Área").sum(axis=0)
+
+    st.download_button(
+        label="📥 Baixar Planilha (XLSX)",
+        data=gerar_excel(df_filtrado),
+        file_name="projetos_consolidados.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    
+
+    id_vars = ["Área", "CATEGORIA"]
+    if "PROJETOS 2025" in df_filtrado.columns:
+        id_vars.append("PROJETOS 2025")
+
+    # 🔁 Realiza o melt com os campos corretos
+    meses_existentes = [m for m in meses_selecionados if m in df_filtrado.columns]
+
+    df_long = df_filtrado.melt(
+        id_vars=[col for col in id_vars if col in df_filtrado.columns],
+        value_vars=meses_existentes,
+        var_name="Data",
+        value_name="Valor"
+    )
+
+    if "PROJETOS 2025" in df_long.columns:
+        df_long["Projeto_Área"] = df_long["PROJETOS 2025"] + " - " + df_long["Área"]
+    else:
+        df_long["Projeto_Área"] = df_long["Área"]
+
+    # Gráfico com cor por CATEGORIA e tooltip detalhado
+    fig = px.bar(
+        df_long,
+        x="Data",
+        y="Valor",
+        color="CATEGORIA",
+        labels={"Data": "Mês", "Valor": "Custo (R$)", "CATEGORIA": "Categoria"},
+        title=f"Evolução dos Valores por Categoria - {area_selecionada}", 
+        hover_data=["CATEGORIA", "Data", "Valor", "Projeto_Área"] 
+    )
+
+    fig.update_layout(barmode="relative")  # mantém as barras empilhadas
     st.plotly_chart(fig, use_container_width=True)
 
-        # Função para carregar budget
+    if area_selecionada not in ["2024", "Calendário de Projetos"]:
+        # Agrupar por PROJETOS 2025 e Área
+        df_ranking = df_long.groupby(["PROJETOS 2025", "Área"]).agg({"Valor": "sum"}).reset_index()
+
+        # Remover projetos em branco
+        df_ranking = df_ranking[df_ranking["PROJETOS 2025"] != ""]
+
+        # Criar campo combinando Projeto + Área
+        df_ranking["Projeto_Área"] = df_ranking["PROJETOS 2025"] + " - " + df_ranking["Área"]
+
+        # Ordenar do maior para o menor e limitar ao Top 10
+        df_ranking = df_ranking.sort_values(by="Valor", ascending=False).head(10)
+
+        # Criar gráfico
+        fig_ranking = px.bar(
+            df_ranking,
+            x="Valor",
+            y="Projeto_Área",
+            orientation="h",
+            title="Maiores Projetos Planejados 2025",
+            labels={"Projeto_Área": "Projeto e Área", "Valor": "Custo Total (R$)"}
+        )
+
+        fig_ranking.update_traces(marker_color="lightblue", texttemplate='R$ %{x:,.2f}', textposition="inside")
+        fig_ranking.update_layout(yaxis=dict(autorange="reversed"))
+
+        # Exibir gráfico
+        st.plotly_chart(fig_ranking, use_container_width=True)
 
 
-elif pagina == "Análise de Budget":
+if area_selecionada == "Calendário de Projetos":
+    # Função para carregar os dados de feriados da API
+    notion_database_id = "1983a12b3962803d9b92f07238715e09"
 
+    # === Função para Buscar a Tabela do Notion ===
+    colunas_ordenadas = ["PROJETO", "JAN", "FEV", "MAR", "ABR", "MAI", "JUN", 
+                        "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"]
+
+    # === Função para Buscar a Tabela do Notion ===
     @st.cache_data
-    def carregar_dados_2024(file_path):
-        """ Carrega e processa os dados da aba 2024. """
+    def carregar_tabela_notion():
         try:
-            df_2024 = pd.read_excel(file_path, sheet_name="2024", header=1)
+            response = requests.post(NOTION_URL.format(notion_database_id), headers=headers)
+            data = response.json()
 
-            df_2024.rename(columns={
-                df_2024.columns[1]: "Projeto",
-                df_2024.columns[2]: "Tipo",
-                df_2024.columns[3]: "Centro de Custo",
-                df_2024.columns[4]: "Marca",
-                df_2024.columns[5]: "Pilares",
-                df_2024.columns[6]: "Fixo/Variável"
-            }, inplace=True)
+            if response.status_code != 200:
+                st.error(f"Erro na API: {response.text}")
+                return pd.DataFrame()
 
-            colunas_meses = [col for col in df_2024.columns[7:] if "TOTAL" not in str(col).upper()]
+            results = data.get("results", [])
 
-            for col in colunas_meses:
-                df_2024[col] = pd.to_numeric(df_2024[col], errors="coerce").fillna(0)
+            registros = []
+            for index, result in enumerate(results):  # Captura a ordem original
+                properties = result.get("properties", {})
 
-            df_2024_melt = df_2024.melt(
-                id_vars=["Projeto", "Tipo", "Centro de Custo", "Marca", "Pilares", "Fixo/Variável"],
-                value_vars=colunas_meses,
-                var_name="Mês",
-                value_name="Valor"
-            )
+                # Criar um dicionário para armazenar os valores da linha
+                linha = {"Ordem_Notion": index}  # Índice numérico para ordenar
 
-            df_2024_melt["Mês"] = pd.to_datetime(df_2024_melt["Mês"], errors="coerce")
-            df_2024_melt = df_2024_melt[df_2024_melt["Valor"] > 0]
+                for key, value in properties.items():
+                    if "title" in value:
+                        linha[key] = " ".join([t["text"]["content"] for t in value["title"]])
+                    elif "rich_text" in value:
+                        linha[key] = " ".join([t["text"]["content"] for t in value["rich_text"]])
+                    elif "select" in value:
+                        linha[key] = value["select"]["name"] if value["select"] else ""
+                    elif "multi_select" in value:
+                        linha[key] = ", ".join([item["name"] for item in value["multi_select"]])
+                    elif "number" in value:
+                        linha[key] = value["number"]
+                    elif "date" in value:
+                        linha[key] = value["date"]["start"] if value["date"] else ""
+                    else:
+                        linha[key] = ""
 
-            return df_2024_melt
+                registros.append(linha)
+
+            df = pd.DataFrame(registros)
+
+            # ✅ Garantir que a coluna "PROJETO" seja a primeira e manter os meses na ordem correta
+            colunas_existentes = [col for col in colunas_ordenadas if col in df.columns]
+            df = df[colunas_existentes + ["Ordem_Notion"]]  # Mantém a coluna de ordenação temporária
+
+            # ✅ FORÇAR a ordem original dos projetos do Notion
+            df = df.sort_values(by="Ordem_Notion", ascending=True).drop(columns=["Ordem_Notion"])
+
+            return df
 
         except Exception as e:
-            st.error(f"Erro ao carregar dados da aba 2024: {e}")
+            st.error(f"Erro ao buscar os dados do Notion: {e}")
             return pd.DataFrame()
 
-    # 📌 Carregar dados da aba 2024
-    df_2024 = carregar_dados_2024(arquivo_excel)
+    # === Criar Nova Página no Dashboard ===
+    st.title("Calendário de Projetos")
 
-    # 📊 Gerar gráfico de maiores gastos
-    if not df_2024.empty:
-        st.subheader("📊 Maiores Gastos do Ano de 2024")
+    df_tabela = carregar_tabela_notion()
 
-        df_maiores_gastos = df_2024.groupby("Projeto")["Valor"].sum().reset_index()
-        df_maiores_gastos = df_maiores_gastos.sort_values(by="Valor", ascending=False).head(10)
+    if not df_tabela.empty:
+        st.dataframe(df_tabela, use_container_width=True)
+    else:
+        st.warning("Nenhum dado encontrado ou erro ao carregar a tabela.")
 
-        fig_maiores_gastos = px.bar(
-            df_maiores_gastos,
-            x="Valor",
-            y="Projeto",
-            orientation="h",
-            title="Top 10 Maiores Gastos de 2024",
-            labels={"Projeto": "Projetos", "Valor": "Gasto Total (R$)"},
-            text_auto=True
+@st.cache_data
+def carregar_dados_2024_completo():
+    dados = []
+    notion_geral_id = "1963a12b3962809ab3f2d7bc93c259fb"
+    has_more = True
+    next_cursor = None
+
+    while has_more:
+        payload = {"page_size": 100}
+        if next_cursor:
+            payload["start_cursor"] = next_cursor
+
+        response = requests.post(NOTION_URL.format(notion_geral_id), headers=headers, json=payload)
+        if response.status_code != 200:
+            st.error(f"Erro na API (Tabela Geral): {response.text}")
+            return pd.DataFrame()
+
+        data = response.json()
+        for result in data.get("results", []):
+            properties = result.get("properties", {})
+            linha = {}
+            for k, v in properties.items():
+                tipo = v.get("type")
+                if tipo == "title":
+                    linha[k] = " ".join([t["text"]["content"] for t in v["title"]])
+                elif tipo == "rich_text":
+                    linha[k] = " ".join([t["text"]["content"] for t in v["rich_text"]])
+                elif tipo == "number":
+                    linha[k] = v.get("number", 0)
+                elif tipo == "select":
+                    linha[k] = v.get("select", {}).get("name", "")
+                elif tipo == "multi_select":
+                    linha[k] = ", ".join([item["name"] for item in v.get("multi_select", [])])
+                elif tipo == "date":
+                    linha[k] = v.get("date", {}).get("start", "")
+                else:
+                    linha[k] = ""
+            dados.append(linha)
+
+        has_more = data.get("has_more", False)
+        next_cursor = data.get("next_cursor", None)
+
+    return pd.DataFrame(dados)
+
+
+if area_selecionada == "2024":
+    st.title("Retroátivo - Realizado 2024")
+
+    df_geral = carregar_dados_2024_completo()
+
+    if "EMPRESA" not in df_geral.columns:
+        df_geral["EMPRESA"] = ""
+
+    if not df_geral.empty:
+        # Padroniza nomes de colunas
+        df_geral.columns = [col.strip() for col in df_geral.columns]
+
+        # Converte colunas numéricas
+        for col in desired_fields_numeric_2024:
+            if col in df_geral.columns:
+                df_geral[col] = pd.to_numeric(df_geral[col], errors="coerce").fillna(0)
+
+        # Cria a coluna de total
+        df_geral["Total"] = df_geral[[col for col in desired_fields_numeric_2024 if col in df_geral.columns]].sum(axis=1)
+        df_geral = df_geral.sort_values(by="Total", ascending=False)
+
+        # Remove a coluna PROJETOS 2025 se existir
+        if "PROJETOS 2025" in df_geral.columns:
+            df_geral = df_geral.drop(columns=["PROJETOS 2025"])
+
+        # Ordena as colunas
+        ordem_colunas = ["EMPRESA"] + [col for col in desired_fields_text if col in df_geral.columns] + desired_fields_numeric_2024 + ["Total"]
+        df_geral = df_geral[[col for col in ordem_colunas if col in df_geral.columns]]
+
+        st.data_editor(df_geral, use_container_width=True)
+
+        df_melt_2024 = df_geral.melt(
+            id_vars=["CATEGORIA"] if "CATEGORIA" in df_geral.columns else [],
+            value_vars=desired_fields_numeric_2024,
+            var_name="Mês",
+            value_name="Valor"
         )
 
-        st.plotly_chart(fig_maiores_gastos, use_container_width=True)
-    else:
-        st.warning("Nenhum dado disponível para exibir os maiores gastos de 2024.")
-
-    # 📌 Carregar Budgets
-    @st.cache_data
-    def carregar_budget_fixos(file_path):
-        """ Carrega e processa os dados da aba BUDGET FIXOS. """
-        budget_fixos = pd.read_excel(file_path, sheet_name="BUDGET FIXOS")
-        budget_fixos = budget_fixos.rename(columns={"Unnamed: 1": "Tipo", budget_fixos.columns[2]: "Budget Disponível"})
-        budget_fixos = budget_fixos.dropna(subset=["Tipo", "Budget Disponível"])
-        return budget_fixos[["Tipo", "Budget Disponível"]]
-
-    @st.cache_data
-    def carregar_budget_variaveis(file_path):
-        """ Carrega e processa os dados da aba BUDGET VARIÁVEIS. """
-        budget_variaveis = pd.read_excel(file_path, sheet_name="BUDGET VARIÁVEIS")
-        budget_variaveis = budget_variaveis.rename(columns={"Unnamed: 0": "Tipo", budget_variaveis.columns[1]: "Budget Disponível"})
-        budget_variaveis = budget_variaveis.dropna(subset=["Tipo", "Budget Disponível"])
-        return budget_variaveis[["Tipo", "Budget Disponível"]]
-
-    # 📌 Carregar dados de Budget Fixo e Variável
-    gastos_fixos = carregar_budget_fixos(arquivo_excel)
-    gastos_variaveis = carregar_budget_variaveis(arquivo_excel)
-
-    # 📌 Comparação entre Budget e Planejado para 2025
-    st.subheader("📊 Comparação entre Budget Disponível e Valores Planejados")
-
-    df_planejado_resumo = df_geral.groupby(["Projeto", "Centro de Custo", "Fixo/Variável"])["Valor"].sum().reset_index()
-
-    df_planejado_resumo = df_geral.groupby(["Projeto", "Centro de Custo", "Fixo/Variável"])["Valor"].sum().reset_index()
-
-    # Separar os planejamentos fixos e variáveis
-    df_planejado_fixos = df_planejado_resumo[df_planejado_resumo["Fixo/Variável"].str.lower() == "fixo"].copy()
-    df_planejado_variaveis = df_planejado_resumo[df_planejado_resumo["Fixo/Variável"].str.lower() == "variável"].copy()
-
-    # Garantir que "Centro de Custo" e "Tipo" estão no mesmo formato (string) para o merge
-    df_planejado_fixos["Centro de Custo"] = df_planejado_fixos["Centro de Custo"].astype(str)
-    df_planejado_variaveis["Centro de Custo"] = df_planejado_variaveis["Centro de Custo"].astype(str)
-    gastos_fixos["Tipo"] = gastos_fixos["Tipo"].astype(str)
-    gastos_variaveis["Tipo"] = gastos_variaveis["Tipo"].astype(str)
-
-    # Comparação de valores fixos
-    comparacao_fixos = pd.merge(
-        df_planejado_fixos.rename(columns={"Centro de Custo": "Tipo"}),
-        gastos_fixos,
-        on="Tipo",
-        how="left"
-    ).fillna(0)
-
-    # Comparação de valores variáveis
-    comparacao_variaveis = pd.merge(
-        df_planejado_variaveis.rename(columns={"Centro de Custo": "Tipo"}),
-        gastos_variaveis,
-        on="Tipo",
-        how="left"
-    ).fillna(0)
-
-    # Criar status de orçamento
-    def definir_status(valor_planejado, budget_disponivel):
-        if valor_planejado > budget_disponivel:
-            return "🔴 Acima do Budget"
-        elif valor_planejado < budget_disponivel:
-            return "🟢 Abaixo do Budget"
-        else:
-            return "🟡 Dentro do Budget"
-
-    comparacao_fixos["Status"] = comparacao_fixos.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
-    comparacao_variaveis["Status"] = comparacao_variaveis.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
-
-    # Unir os dois DataFrames
-    comparacao_final = pd.concat([comparacao_fixos, comparacao_variaveis], ignore_index=True)
-
-    # 📋 Exibir tabela de comparação sem ace_tools
-    st.subheader("📋 Resumo Comparativo por Tipo")
-    st.dataframe(comparacao_final, use_container_width=True)
-    # Comparação de valores variáveis
-    comparacao_variaveis = pd.merge(
-        df_planejado_variaveis.rename(columns={"Centro de Custo": "Tipo"}),
-        gastos_variaveis,
-        on="Tipo",
-        how="left"
-    ).fillna(0)
-
-    comparacao_variaveis = pd.merge(
-        df_planejado_variaveis.rename(columns={"Centro de Custo": "Tipo"}),
-        gastos_variaveis,
-        on="Tipo",
-        how="left"
-    ).fillna(0)
-
-    # Criar status de orçamento
-    def definir_status(valor_planejado, budget_disponivel):
-        if valor_planejado > budget_disponivel:
-            return "🔴 Acima do Budget"
-        elif valor_planejado < budget_disponivel:
-            return "🟢 Abaixo do Budget"
-        else:
-            return "🟡 Dentro do Budget"
-
-    comparacao_fixos["Status"] = comparacao_fixos.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
-    comparacao_variaveis["Status"] = comparacao_variaveis.apply(lambda row: definir_status(row["Valor"], row["Budget Disponível"]), axis=1)
-
-    # Unir os dois DataFrames
-    comparacao_final = pd.concat([comparacao_fixos, comparacao_variaveis], ignore_index=True)
-
-    # 📋 Exibir tabela de comparação sem usar ace_tools
-    st.subheader("📋 Resumo Comparativo por Tipo")
-    st.dataframe(comparacao_final, use_container_width=True)
-
-    # 📊 Gráficos de Comparação
-    st.subheader("📊 Comparação Budget vs. Planejado")
-    fig_comparacao = px.bar(
-        comparacao_final,
-        x="Tipo",
-        y=["Valor", "Budget Disponível"],
-        barmode="group",
-        title="Comparação entre Budget e Planejado"
-    )
-    st.plotly_chart(fig_comparacao, use_container_width=True)
-
-    st.subheader("📊 Diferença Entre Orçado e Planejado")
-    fig_diferenca = px.bar(
-        comparacao_final,
-        x="Tipo",
-        y="Valor",
-        color="Status",
-        title="Diferença Entre Orçado e Planejado por Tipo",
-        text_auto=True
-    )
-    st.plotly_chart(fig_diferenca, use_container_width=True)
-
-elif pagina == "Calendário de Projetos":
-    st.subheader("📅 Calendário de Projetos 2025")
-    tabela_calendario = criar_tabela_calendario(df_calendario)
-    colunas_exibir = ["Projeto"] + filtro_meses
-    tabela_filtrada = tabela_calendario[colunas_exibir]
-    st.dataframe(tabela_filtrada, use_container_width=True)
-
-elif pagina in abas_relevantes:
-    st.subheader(f"📊 Análise Detalhada - {pagina.strip()}")
-    
-    # Filtrar os dados da aba selecionada
-    df_area_filtrado = df_filtrado[df_filtrado["Fonte"] == pagina.strip()]
-
-    # Verificar se há dados processados
-    if df_area_filtrado.empty:
-        st.warning(f"Nenhum dado processado para a aba '{pagina.strip()}'. Verifique a estrutura dos dados na planilha.")
-    else:
-        # Exibir os Big Numbers
-        total_area, fixo_area, variavel_area = calcular_totais_area(df_area_filtrado)
-        col_b1, col_b2, col_b3 = st.columns(3)
-        with col_b1:
-            st.metric(label=f"Total Previsto - {pagina.strip()}",
-                      value=f"R$ {total_area:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        with col_b2:
-            st.metric(label=f"Total Fixo - {pagina.strip()}",
-                      value=f"R$ {fixo_area:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        with col_b3:
-            st.metric(label=f"Total Variável - {pagina.strip()}",
-                      value=f"R$ {variavel_area:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-        # Exibir os dados da aba
-        st.subheader("📋 Dados Detalhados da Aba")
-        st.dataframe(df_area_filtrado, use_container_width=True)
-
-        # Gerar gráfico de barras
-        st.subheader("📈 Evolução dos Valores por Data")
-        fig = px.bar(
-            df_area_filtrado,
-            x="Data",
+        # ➕ Cria gráfico de barras empilhadas
+        fig_2024 = px.bar(
+            df_melt_2024,
+            x="Mês",
             y="Valor",
-            color="Categoria",
-            labels={
-                "Data": "Data",
-                "Valor": "Valor (R$)",
-                "Categoria": "Categoria"
-            },
-            title=f"Evolução dos Valores - {pagina.strip()}"
+            color="CATEGORIA" if "CATEGORIA" in df_melt_2024.columns else None,
+            barmode="relative",
+            title="📈 Evolução dos Valores por Categoria - 2024",
+            labels={"Valor": "Custo (R$)"}
         )
-        st.plotly_chart(fig, use_container_width=True)
+
+        # ➕ Personalizações (opcional)
+        fig_2024.update_layout(
+            xaxis_title="Mês",
+            yaxis_title="Custo (R$)",
+            legend_title="Categoria"
+        )
+
+        # ➕ Exibe o gráfico
+        st.plotly_chart(fig_2024, use_container_width=True)
+    else:
+        st.warning("⚠️ Nenhum dado encontrado na tabela geral.")
+
+    # 🔹 2. Top 10 Empresas
+    st.subheader("Serviços Contratados com Maior Custo Agregado - 2024")
+
+    notion_top10_id = "1b43a12b3962800c99d1d813c9f6f5d1"
+    response_top10 = requests.post(NOTION_URL.format(notion_top10_id), headers=headers)
+
+    if response_top10.status_code == 200:
+        data_top10 = response_top10.json()
+
+        if "results" in data_top10 and len(data_top10["results"]) > 0:
+            registros = []
+            for item in data_top10["results"]:
+                properties = item.get("properties", {})
+                empresa = ""
+                empresa_prop = properties.get("EMPRESA", {})
+                if "rich_text" in empresa_prop:
+                    empresa = " ".join([t["text"]["content"] for t in empresa_prop["rich_text"] if "text" in t])
+
+                total_anual = 0
+                for mes in ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]:
+                    prop = properties.get(mes, {})
+                    if prop.get("type") == "number" and prop.get("number") is not None:
+                        total_anual += prop["number"]
+
+                if empresa and total_anual > 0:
+                    registros.append({"EMPRESA": empresa, "Total Anual": total_anual})
+
+            df_top10 = pd.DataFrame(registros)
+            df_top10 = df_top10.sort_values(by="Total Anual", ascending=False).head(10)
+
+            st.data_editor(df_top10, use_container_width=True)
+
+            st.write(f"**Total dos Gastos**: **R$ {df_top10['Total Anual'].sum():,.2f}**")
+
+            fig_top10 = px.bar(
+                df_top10,
+                x="Total Anual",
+                y="EMPRESA",
+                orientation="h",
+                text=df_top10["Total Anual"].apply(lambda x: f"R$ {x:,.2f}"),
+                title="Principais Gastos 2024",
+                labels={"EMPRESA": "Empresa", "Total Anual": "Custo Total Anual (R$)"}
+            )
+            fig_top10.update_traces(marker_color="lightskyblue", textposition="inside")
+            fig_top10.update_layout(yaxis=dict(autorange="reversed"))
+
+            st.plotly_chart(fig_top10, use_container_width=True)
+        else:
+            st.warning("⚠️ A API não retornou dados para o Top 10.")
+    else:
+        st.error(f"Erro na API (Top 10): {response_top10.status_code}")
+        st.write(response_top10.text)
