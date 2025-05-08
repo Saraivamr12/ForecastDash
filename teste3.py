@@ -251,14 +251,17 @@ planejado_fixo_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Fixo"]["T
 planejado_variavel_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Variável"]["Total_Projeto"].sum()
 realizado_total = df_realizado["Total_Projeto"].sum()
 
-col1.metric("Planejado Fixo", f"R$ {planejado_fixo_total:,.2f}", help="Esse valor considera os projetos planejados que foram categorizados como despesa fixa.")
-col2.metric("Planejado Variável", f"R$ {planejado_variavel_total:,.2f}",  help="Esse valor considera os projetos planejados que foram categorizados como despesa variável. ")
-col3.metric("Realizado Total - YTD", f"R$ {realizado_total:,.2f}",  help="Esse valor considera todos os pagamentos realizados dentro dos Centros de Custos do Marketing até a data atual.")
+def formatar_valor_brasileiro(valor):
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+col1.metric("Planejado Fixo", formatar_valor_brasileiro(planejado_fixo_total), help="Esse valor considera os projetos planejados que foram categorizados como despesa fixa.")
+col2.metric("Planejado Variável", formatar_valor_brasileiro(planejado_variavel_total), help="Esse valor considera os projetos planejados que foram categorizados como despesa variável.")
+col3.metric("Realizado Total - YTD", formatar_valor_brasileiro(realizado_total), help="Esse valor considera todos os pagamentos realizados dentro dos Centros de Custos do Marketing até a data atual.")
 
 ORCAMENTO_2025_ID = "1d13a12b396280d69b2ff63228e2b0bf"
 df_orcamento_2025 = carregar_database_notion(ORCAMENTO_2025_ID)
 
-abas_visiveis = [nome for nome in database_ids.values() if nome != "2024"]
+abas_visiveis = [nome for nome in database_ids.values()]
 area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
 
 if st.sidebar.button("Recarregar Página"):
@@ -588,43 +591,46 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
         cor_restante = "green" if valor_restante >= 0 else "red"
         texto_restante = "Disponível no orçamento" if valor_restante >= 0 else "Estouro do orçamento"
 
-        col1, col2, col3 = st.columns(3)
+    def formatar_valor_brasileiro(valor):
+        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-        with col1:
-            st.markdown(f"""
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <img src="https://img.icons8.com/?size=100&id=igliuy55hqkp&format=png&color=000000" width="36">
-                    <div>
-                        <div style="font-size: 13px; color: gray;">Diferença Realizado x Orçado ({mes_atual})</div>
-                        <div style="font-size: 26px; font-weight: bold;">R$ {valor_realizado_mes:,.2f}</div>
-                        <div style="color: {cor_variacao}; font-size: 14px;">{texto_variacao}</div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
 
-        with col2:
-            st.markdown(f"""
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <img src="https://img.icons8.com/?size=100&id=3104&format=png&color=000000" width="36">
-                    <div>
-                        <div style="font-size: 13px; color: gray;"> Burn Rate ({mes_atual})</div>
-                        <div style="font-size: 26px; font-weight: bold;">{burn_rate_percentual:.2f}%</div>
-                        <div style="color: {cor_burn}; font-size: 14px;">{texto_burn}</div>
-                    </div>
+    with col1:
+        st.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <img src="https://img.icons8.com/?size=100&id=igliuy55hqkp&format=png&color=000000" width="36">
+                <div>
+                    <div style="font-size: 13px; color: gray;">Diferença Realizado x Orçado ({mes_atual})</div>
+                    <div style="font-size: 26px; font-weight: bold;">{formatar_valor_brasileiro(valor_realizado_mes)}</div>
+                    <div style="color: {cor_variacao}; font-size: 14px;">{texto_variacao}</div>
                 </div>
-            """, unsafe_allow_html=True)
+            </div>
+        """, unsafe_allow_html=True)
 
-        with col3:
-            st.markdown(f"""
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <img src="https://img.icons8.com/?size=100&id=2975&format=png&color=000000" width="36">
-                    <div>
-                        <div style="font-size: 13px; color: gray;"> Valor Restante ({mes_atual})</div>
-                        <div style="font-size: 26px; font-weight: bold;">R$ {valor_restante:,.2f}</div>
-                        <div style="color: {cor_restante}; font-size: 14px;">{texto_restante}</div>
-                    </div>
+    with col2:
+        st.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <img src="https://img.icons8.com/?size=100&id=3104&format=png&color=000000" width="36">
+                <div>
+                    <div style="font-size: 13px; color: gray;">Burn Rate ({mes_atual})</div>
+                    <div style="font-size: 26px; font-weight: bold;">{burn_rate_percentual:.2f}%</div>
+                    <div style="color: {cor_burn}; font-size: 14px;">{texto_burn}</div>
                 </div>
-            """, unsafe_allow_html=True)
+            </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <img src="https://img.icons8.com/?size=100&id=2975&format=png&color=000000" width="36">
+                <div>
+                    <div style="font-size: 13px; color: gray;">Valor Restante ({mes_atual})</div>
+                    <div style="font-size: 26px; font-weight: bold;">{formatar_valor_brasileiro(valor_restante)}</div>
+                    <div style="color: {cor_restante}; font-size: 14px;">{texto_restante}</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
         
 # 👉 Exibe os componentes apenas se NÃO for a aba "Calendário de Projetos"
 if area_selecionada not in ["Calendário de Projetos", "2024"]:
@@ -671,7 +677,23 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
     else:
         df_long["Projeto_Área"] = df_long["Área"]
 
-    # Gráfico com cor por CATEGORIA e tooltip detalhado
+    escala_categorias_customizada = [
+        "#114b5f",
+        "#156079",
+        "#186e8b",
+        "#1c7c9c",
+        "#1f8aad",
+        "#2297bf",
+        "#25a5d0",
+        "#2fafda",
+        "#40b6dd",
+        "#52bde0",
+        "#75c9e6",
+        "#99d6ec",
+        "#bde2f3",
+        "#e0eff9"
+    ]
+
     fig = px.bar(
         df_long,
         x="Data",
@@ -679,10 +701,12 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
         color="CATEGORIA",
         labels={"Data": "Mês", "Valor": "Custo (R$)", "CATEGORIA": "Categoria"},
         title=f"Evolução dos Valores por Categoria - {area_selecionada}", 
-        hover_data=["CATEGORIA", "Data", "Valor", "Projeto_Área"] 
+        hover_data=["CATEGORIA", "Data", "Valor", "Projeto_Área"],
+        color_discrete_sequence=escala_categorias_customizada  # 🎨 Aplica cor apenas aqui
     )
 
     fig.update_layout(barmode="relative")  # mantém as barras empilhadas
+
     st.plotly_chart(fig, use_container_width=True)
 
     if area_selecionada not in ["2024", "Calendário de Projetos"]:
@@ -699,19 +723,33 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
         df_ranking = df_ranking.sort_values(by="Valor", ascending=False).head(10)
 
         # Criar gráfico
+        cores_projetos = [
+            "#114b5f",
+            "#156079",
+            "#186e8b",
+            "#1c7c9c",
+            "#1f8aad",
+            "#2297bf",
+            "#25a5d0",
+            "#2fafda",
+            "#40b6dd",
+            "#52bde0"
+        ]
+
         fig_ranking = px.bar(
             df_ranking,
             x="Valor",
             y="Projeto_Área",
             orientation="h",
             title="Maiores Projetos Planejados 2025",
-            labels={"Projeto_Área": "Projeto e Área", "Valor": "Custo Total (R$)"}
+            labels={"Projeto_Área": "Projeto e Área", "Valor": "Custo Total (R$)"},
+            color="Projeto_Área",  # <– necessário para aplicar cor distinta por projeto
+            color_discrete_sequence=cores_projetos
         )
 
-        fig_ranking.update_traces(marker_color="lightblue", texttemplate='R$ %{x:,.2f}', textposition="inside")
+        fig_ranking.update_traces(texttemplate='R$ %{x:,.2f}', textposition="inside")
         fig_ranking.update_layout(yaxis=dict(autorange="reversed"))
 
-        # Exibir gráfico
         st.plotly_chart(fig_ranking, use_container_width=True)
 
 
@@ -869,25 +907,49 @@ if area_selecionada == "2024":
             value_name="Valor"
         )
 
-        # ➕ Cria gráfico de barras empilhadas
+        escala_cores_ordenadas = [
+            "#114b5f",
+            "#156079",
+            "#186e8b",
+            "#1c7c9c",
+            "#1f8aad",
+            "#2297bf",
+            "#25a5d0",
+            "#2fafda",
+            "#40b6dd",
+            "#52bde0",
+            "#75c9e6",
+            "#99d6ec",
+            "#bde2f3",
+            "#e0eff9"
+        ]
+
+        ordem_categorias = (
+            df_melt_2024.groupby("CATEGORIA")["Valor"].sum()
+            .sort_values(ascending=False)
+            .index.tolist()[::-1]
+        )
+
+        df_melt_2024["CATEGORIA"] = pd.Categorical(df_melt_2024["CATEGORIA"], categories=ordem_categorias, ordered=True)
+
         fig_2024 = px.bar(
             df_melt_2024,
             x="Mês",
             y="Valor",
-            color="CATEGORIA" if "CATEGORIA" in df_melt_2024.columns else None,
+            color="CATEGORIA",
             barmode="relative",
             title="📈 Evolução dos Valores por Categoria - 2024",
-            labels={"Valor": "Custo (R$)"}
+            labels={"Valor": "Custo (R$)"},
+            color_discrete_sequence=escala_cores_ordenadas,
+            category_orders={"CATEGORIA": ordem_categorias}  # 👈 forçar ordem da legenda = ordem da cor
         )
 
-        # ➕ Personalizações (opcional)
         fig_2024.update_layout(
             xaxis_title="Mês",
             yaxis_title="Custo (R$)",
             legend_title="Categoria"
         )
 
-        # ➕ Exibe o gráfico
         st.plotly_chart(fig_2024, use_container_width=True)
     else:
         st.warning("⚠️ Nenhum dado encontrado na tabela geral.")
@@ -926,21 +988,38 @@ if area_selecionada == "2024":
 
             st.write(f"**Total dos Gastos**: **R$ {df_top10['Total Anual'].sum():,.2f}**")
 
-            fig_top10 = px.bar(
-                df_top10,
-                x="Total Anual",
-                y="EMPRESA",
-                orientation="h",
-                text=df_top10["Total Anual"].apply(lambda x: f"R$ {x:,.2f}"),
-                title="Principais Gastos 2024",
-                labels={"EMPRESA": "Empresa", "Total Anual": "Custo Total Anual (R$)"}
-            )
-            fig_top10.update_traces(marker_color="lightskyblue", textposition="inside")
-            fig_top10.update_layout(yaxis=dict(autorange="reversed"))
+        cores_top10 = [
+            "#114b5f",
+            "#156079",
+            "#186e8b",
+            "#1c7c9c",
+            "#1f8aad",
+            "#2297bf",
+            "#2fafda",
+            "#40b6dd",
+            "#52bde0",
+            "#75c9e6"
+        ]
 
-            st.plotly_chart(fig_top10, use_container_width=True)
-        else:
-            st.warning("⚠️ A API não retornou dados para o Top 10.")
+        # Ordenar os dados do maior para o menor para garantir correspondência
+        df_top10 = df_top10.sort_values(by="Total Anual", ascending=False).reset_index(drop=True)
+
+            # Criar gráfico com cores aplicadas
+        fig_top10 = px.bar(
+            df_top10,
+            x="Total Anual",
+            y="EMPRESA",
+            orientation="h",
+            text=df_top10["Total Anual"].apply(lambda x: f"R$ {x:,.2f}"),
+            title="Principais Gastos 2024",
+            labels={"EMPRESA": "Empresa", "Total Anual": "Custo Total Anual (R$)"}
+        )
+
+        # Aplicar as cores manualmente
+        fig_top10.update_traces(marker_color=cores_top10[:len(df_top10)], textposition="inside")
+        fig_top10.update_layout(yaxis=dict(autorange="reversed"))
+
+            # Exibir gráfico
+        st.plotly_chart(fig_top10, use_container_width=True)
     else:
-        st.error(f"Erro na API (Top 10): {response_top10.status_code}")
-        st.write(response_top10.text)
+        st.warning("⚠️ A API não retornou dados para o Top 10.")
