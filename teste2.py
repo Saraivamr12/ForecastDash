@@ -11,8 +11,16 @@ st.set_page_config(layout="wide")
 
 
 def formatar_valor_brasileiro(valor):
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
+    """Formata um valor numérico para o padrão de moeda brasileira R$ 1.234,56."""
+    if pd.isna(valor):
+        return ""
+    try:
+        # Garante que o valor seja float para formatação
+        valor_float = float(valor)
+        return f"R$ {valor_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return str(valor) # Retorna o valor original se não puder ser formatado
+    
 def gerar_excel(df):
     """Cria um arquivo Excel em memória para download usando openpyxl."""
     output = io.BytesIO()
@@ -241,6 +249,28 @@ for db_id, nome_base in database_ids.items():
 
 df_planejado = pd.concat(dfs_planejado, ignore_index=True)
 df_realizado = carregar_database_notion(REALIZADO_2025_ID)
+
+REALIZADO_YTD_ID = "1f33a12b396280bb805cee7794534fc3"
+
+@st.cache_data
+def carregar_realizado_ytd():
+    df = carregar_database_notion(REALIZADO_YTD_ID)
+    df["Área"] = "Todos"
+    for col in desired_fields_numeric:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    df["Total_Projeto"] = df[desired_fields_numeric].sum(axis=1)
+    return df
+
+REALIZADO_VARIAVEL_ID = "1f23a12b39628055bd50e43fa8bc02e5"
+df_realizado_variavel = carregar_database_notion(REALIZADO_VARIAVEL_ID)
+df_realizado_variavel["Área"] = "Todos"
+
+# Converte colunas numéricas
+for col in desired_fields_numeric:
+    if col in df_realizado_variavel.columns:
+        df_realizado_variavel[col] = pd.to_numeric(df_realizado_variavel[col], errors="coerce").fillna(0)
+
 df_realizado["Área"] = "Todos"  # Adiciona a coluna faltante
 
 meses_planejado = [col for col in desired_fields_numeric if col in df_planejado.columns]
@@ -254,21 +284,6 @@ df_orcamento_2025 = carregar_database_notion(ORCAMENTO_2025_ID)
 
 abas_visiveis = [nome for nome in database_ids.values()]
 area_selecionada = st.sidebar.radio("Escolha a Área", options=["Todos"] + abas_visiveis + ["Calendário de Projetos"])
-
-
-if area_selecionada == "Todos":
-    col1, col2, col3 = st.columns(3)
-
-    planejado_fixo_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Fixo"]["Total_Projeto"].sum()
-    planejado_variavel_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Variável"]["Total_Projeto"].sum()
-    realizado_total = df_realizado["Total_Projeto"].sum()
-
-    def formatar_valor_brasileiro(valor):
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-    col1.metric("Planejado Fixo", formatar_valor_brasileiro(planejado_fixo_total), help="Esse valor considera os projetos planejados que foram categorizados como despesa fixa.")
-    col2.metric("Planejado Variável", formatar_valor_brasileiro(planejado_variavel_total), help="Esse valor considera os projetos planejados que foram categorizados como despesa variável.")
-    col3.metric("Realizado Total - YTD", formatar_valor_brasileiro(realizado_total), help="Esse valor considera todos os pagamentos realizados dentro dos Centros de Custos do Marketing até a data atual.")
 
 if st.sidebar.button("Recarregar Página"):
     st.rerun()
@@ -305,6 +320,20 @@ else:
 
 # Aplica filtro final de segurança para remover 2024, mesmo que tenha vindo da origem por erro
 df_dados_area = df_dados_area[df_dados_area["Área"] != "2024"]
+
+def obter_realizado_total_ytd_dinamico(meses_filtrados, filtro_fixo):
+    if filtro_fixo == "Fixo":
+        df = carregar_database_notion("1d03a12b396280569b55e2d2ba8f2ce4")
+    elif filtro_fixo == "Variável":
+        df = carregar_database_notion("1f23a12b39628055bd50e43fa8bc02e5")
+    else:
+        df = carregar_realizado_ytd()
+
+    # Garante que apenas colunas numéricas dos meses filtrados sejam somadas
+    df_filtrado = df[[col for col in meses_filtrados if col in df.columns]].copy()
+    df_filtrado = df_filtrado.apply(pd.to_numeric, errors='coerce').fillna(0)
+
+    return df_filtrado.sum().sum()
 
 with st.expander("🔍 Filtros", expanded=False):
     col1, col2, col3 = st.columns(3)
@@ -388,8 +417,30 @@ df_filtrado_realizado = df_realizado.copy()
 if filtro_fixo != "Todos" and "FIXO/VARIÁVEL" in df_filtrado_realizado.columns:
     df_filtrado_realizado = df_filtrado_realizado[df_filtrado_realizado["FIXO/VARIÁVEL"] == filtro_fixo]
 
+
 # Gráficos comparativos (apenas na aba "Todos")
 if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_planejado.empty and not df_filtrado_realizado.empty:
+
+    df_realizado_ytd = carregar_realizado_ytd()
+
+# Filtra as colunas selecionadas (de data)
+    df_realizado_ytd_filtrado = df_realizado_ytd[meses_selecionados]
+    realizado_ytd_total = df_realizado_ytd_filtrado.sum().sum()
+
+    if area_selecionada == "Todos":
+        col1, col2, col3 = st.columns(3)
+
+        planejado_fixo_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Fixo"]["Total_Projeto"].sum()
+        planejado_variavel_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Variável"]["Total_Projeto"].sum()
+        realizado_total = obter_realizado_total_ytd_dinamico(meses_selecionados, filtro_fixo)
+
+        def formatar_valor_brasileiro(valor):
+            return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        col1.metric("Planejado Fixo", formatar_valor_brasileiro(planejado_fixo_total), help="Esse valor considera os projetos planejados que foram categorizados como despesa fixa.")
+        col2.metric("Planejado Variável", formatar_valor_brasileiro(planejado_variavel_total), help="Esse valor considera os projetos planejados que foram categorizados como despesa variável.")
+        col3.metric("Realizado Total - YTD", formatar_valor_brasileiro(realizado_total), help="Esse valor considera todos os pagamentos realizados dentro dos Centros de Custos do Marketing até a data atual.")
+
 
     meses_ordem = meses_selecionados
     ordem_meses = {m: i for i, m in enumerate(meses_ordem)}
@@ -406,9 +457,21 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
             value_name="Planejado"
         ).groupby(["MÊS", "CATEGORIA"])["Planejado"].sum().reset_index()
 
-        df_realizado_match = df_filtrado_realizado.melt(
-            id_vars=["TÍTULO"] if "TÍTULO" in df_filtrado_realizado.columns else None,
-            value_vars=[col for col in df_filtrado_realizado.columns if col in meses_ordem],
+        if tipo_custo == "Fixo":
+            # Usa o DataFrame filtrado com a coluna FIXO/VARIÁVEL
+            if tipo_custo == "Fixo" and "FIXO/VARIÁVEL" in df_filtrado_realizado.columns:
+                df_realizado_base = df_filtrado_realizado[df_filtrado_realizado["FIXO/VARIÁVEL"] == "Fixo"]
+            elif tipo_custo == "Variável":
+                df_realizado_base = df_realizado_variavel.copy()
+            else:
+                df_realizado_base = df_filtrado_realizado.copy() 
+        else:
+            # Usa diretamente a nova base de realizado variável
+            df_realizado_base = df_realizado_variavel.copy()
+
+        df_realizado_match = df_realizado_base.melt(
+            id_vars=["TÍTULO"] if "TÍTULO" in df_realizado_base.columns else None,
+            value_vars=[col for col in df_realizado_base.columns if col in meses_ordem],
             var_name="MÊS",
             value_name="Realizado"
         ).groupby("MÊS", as_index=False)["Realizado"].sum()
@@ -427,25 +490,14 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
 
         
         cores_ordenadas = [
-            "#241726",
-            "#8D80AD",
-            "#3B2640",
-            "#6F5F95",
-            "#533659",
-            "#8576A7",
-            "#6B4573",
-            "#774D80",
-            "#83548C",
-            "#8D5A97",
-            "#9966A3",
-            "#A69BBF",
-            "#AA80B3",
-            "#B38CBA",
-            "#AA7DCE",
-            "#C3A6C9",
-            "#945CC1",
-            "#817E9F"
-        
+            '#624E91', '#A6C48B', '#E35454', '#3F79B6', '#CB9084',
+            '#37489B', '#E54F7E', '#EDA632', '#5BC0AE', '#7279C0',
+            '#191A51', '#BA60A3', '#3264B6', '#42AFA6', '#F1A535',
+            '#E25C66', '#8F3F8D', '#A177B4', '#FAEEDC', '#E05D2F',
+            '#F1C49E', '#355FA2', '#8BC4E2', '#BFD976', '#F9F0C7',
+            '#7B5D9E', '#F8E8E8', '#F83734', '#3D5497', '#118B7A',
+            '#FFC705', '#D6B4F6', '#DB3A7C', '#11191F', '#40B2B2',
+            '#2D3E61', '#262626', '#444444', '#008080', '#339999'
         ]   
 
         df_barras["CATEGORIA"] = pd.Categorical(
