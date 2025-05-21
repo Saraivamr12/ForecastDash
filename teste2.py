@@ -430,8 +430,16 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
     if area_selecionada == "Todos":
         col1, col2, col3 = st.columns(3)
 
-        planejado_fixo_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Fixo"]["Total_Projeto"].sum()
-        planejado_variavel_total = df_planejado[df_planejado["FIXO/VARIÁVEL"] == "Variável"]["Total_Projeto"].sum()
+        fixo_filtrado = df_filtrado_planejado[df_filtrado_planejado["FIXO/VARIÁVEL"] == "Fixo"]
+        variavel_filtrado = df_filtrado_planejado[df_filtrado_planejado["FIXO/VARIÁVEL"] == "Variável"]
+
+        # Garante que só use colunas que realmente existem
+        meses_fixo = [col for col in meses_selecionados if col in fixo_filtrado.columns]
+        meses_variavel = [col for col in meses_selecionados if col in variavel_filtrado.columns]
+
+        # Soma corretamente
+        planejado_fixo_total = fixo_filtrado[meses_fixo].sum().sum()
+        planejado_variavel_total = variavel_filtrado[meses_variavel].sum().sum()
         realizado_total = obter_realizado_total_ytd_dinamico(meses_selecionados, filtro_fixo)
 
         def formatar_valor_brasileiro(valor):
@@ -567,36 +575,70 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
 
     st.subheader("Ano Atual YTD - Real X Planejado")
     # Gráfico
-    fig_comp = px.bar(
-        df_realizado_melt,
+    df_realizado_fixo = carregar_database_notion("1d03a12b396280569b55e2d2ba8f2ce4")
+    df_realizado_variavel = carregar_database_notion("1f23a12b39628055bd50e43fa8bc02e5")
+
+    # Padroniza colunas numéricas
+    for df in [df_realizado_fixo, df_realizado_variavel]:
+        for col in desired_fields_numeric:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Soma por mês
+    fixo_mensal = df_realizado_fixo[desired_fields_numeric].sum().reset_index()
+    variavel_mensal = df_realizado_variavel[desired_fields_numeric].sum().reset_index()
+
+    fixo_mensal.columns = ["Mês", "Valor"]
+    variavel_mensal.columns = ["Mês", "Valor"]
+
+    fixo_mensal["Tipo"] = "Realizado Fixo"
+    variavel_mensal["Tipo"] = "Realizado Variável"
+
+    df_realizado_empilhado = pd.concat([fixo_mensal, variavel_mensal], ignore_index=True)
+
+    # Orçado
+    orcado_mensal = df_orcado[desired_fields_numeric].sum().reset_index()
+    orcado_mensal.columns = ["Mês", "Orçado"]
+
+    # Ordena meses
+    ordem_meses = {m: i for i, m in enumerate(desired_fields_numeric)}
+    df_realizado_empilhado["ordem"] = df_realizado_empilhado["Mês"].map(ordem_meses)
+    orcado_mensal["ordem"] = orcado_mensal["Mês"].map(ordem_meses)
+
+    df_realizado_empilhado = df_realizado_empilhado.sort_values("ordem")
+    orcado_mensal = orcado_mensal.sort_values("ordem")
+
+    # Gráfico
+    fig_empilhado = px.bar(
+        df_realizado_empilhado,
         x="Mês",
-        y="Realizado",
-        title="Realizado X Orçado - 2025",
-        labels={"Realizado": "Valor (R$)"}
+        y="Valor",
+        color="Tipo",
+        barmode="relative",
+        title="Realizado Fixo + Variável X Orçado - 2025",
+        labels={"Valor": "Valor (R$)", "Tipo": "Tipo de Custo"},
+        color_discrete_map={"Realizado Fixo": "#9370DB", "Realizado Variável": "#BA55D3"}
     )
 
-    # Atualiza a cor das barras depois da criação
-    fig_comp.update_traces(marker_color="#9370DB")
-
-    # Adiciona a linha do orçamento
-    fig_comp.add_scatter(
-        x=df_orcado_melt["Mês"],
-        y=df_orcado_melt["Orçado"],
+    # Linha do orçado
+    fig_empilhado.add_scatter(
+        x=orcado_mensal["Mês"],
+        y=orcado_mensal["Orçado"],
         mode="lines+markers",
         name="Orçado",
         line=dict(color="#E6E6FA", width=3, dash="dot"),
         marker=dict(size=6, color="#8A2BE2"),
-        fill="tozeroy",  # 👉 isso adiciona o preenchimento até o zero
-        fillcolor="rgba(255,165,3.5)"  # cor laranja com transparência
+        fill="tozeroy",  # 🟣 Isso aplica o preenchimento até o zero
+        fillcolor="rgba(138,43,226,0.2)"  # Roxo com transparência
     )
 
-    fig_comp.update_layout(
+    fig_empilhado.update_layout(
         xaxis_title="Mês",
         yaxis_title="Total (R$)",
         legend_title="Legenda"
     )
 
-    st.plotly_chart(fig_comp, use_container_width=True)
+    st.plotly_chart(fig_empilhado, use_container_width=True)
 
     # === Cálculo de variação percentual do mês atual ===
     meses_map = {
@@ -619,8 +661,22 @@ if area_selecionada == "Todos" and filtro_area == "Todos" and not df_filtrado_pl
     mes_atual = meses_map.get(mes_ingles)
 
     if mes_atual in desired_fields_numeric:
-        valor_realizado_mes = df_realizado[mes_atual].sum()
-        valor_orcado_mes = df_orcado[mes_atual].sum()
+    # Seleciona a base correta com base no filtro
+        if filtro_fixo == "Fixo":
+            df_realizado_base_bignumber = carregar_database_notion("1d03a12b396280569b55e2d2ba8f2ce4")
+        elif filtro_fixo == "Variável":
+            df_realizado_base_bignumber = carregar_database_notion("1f23a12b39628055bd50e43fa8bc02e5")
+        else:
+            df_realizado_base_bignumber = carregar_database_notion("1f33a12b396280bb805cee7794534fc3")
+
+        # Converte coluna do mês para numérico
+        if mes_atual in df_realizado_base_bignumber.columns:
+            df_realizado_base_bignumber[mes_atual] = pd.to_numeric(df_realizado_base_bignumber[mes_atual], errors="coerce").fillna(0)
+            valor_realizado_mes = df_realizado_base_bignumber[mes_atual].sum()
+        else:
+            valor_realizado_mes = 0
+
+        valor_orcado_mes = df_orcado[mes_atual].sum() if mes_atual in df_orcado.columns else 0
 
         if valor_orcado_mes > 0:
             variacao_percentual = ((valor_realizado_mes - valor_orcado_mes) / valor_orcado_mes) * 100
@@ -791,7 +847,8 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
 
     fig.update_layout(barmode="relative")  # mantém as barras empilhadas
 
-    df_realizado_melt_abas = df_realizado[meses_selecionados].copy()
+    df_realizado_total_ytd = carregar_realizado_ytd()
+    df_realizado_melt_abas = df_realizado_total_ytd[meses_selecionados].copy()
     df_realizado_melt_abas = df_realizado_melt_abas.sum().reset_index()
     df_realizado_melt_abas.columns = ["Mês", "Realizado"]
     df_realizado_melt_abas["Mês"] = pd.Categorical(df_realizado_melt_abas["Mês"], categories=meses_selecionados, ordered=True)
