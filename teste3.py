@@ -9,6 +9,16 @@ import datetime
 # === 1. Função para gerar o Excel ===
 st.set_page_config(layout="wide")
 
+# Mapeamento entre áreas e IDs das bases por centro de custos
+realizado_por_area_ids = {
+    "MÍDIA E PERFORMANCE": "1d63a12b3962807693e7f2fe59623f0f",
+    "MKT DE CONTEÚDO": "1d63a12b3962800fb208cad6c0b461eb",
+    "MKT DE PRODUTO": "1d63a12b3962801a9707ec550f54d9c5",
+    "GROWTH": "1d63a12b3962807bac16ca40c3b56cf7",
+    "CONTEÚDO": "1d63a12b3962807bac16ca40c3b56cf7",
+    "CX": "1d63a12b3962806ca0e6e073f5317e9f",
+}
+
 
 def formatar_valor_brasileiro(valor):
     """Formata um valor numérico para o padrão de moeda brasileira R$ 1.234,56."""
@@ -847,9 +857,28 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
 
     fig.update_layout(barmode="relative")  # mantém as barras empilhadas
 
-    df_realizado_total_ytd = carregar_realizado_ytd()
-    df_realizado_melt_abas = df_realizado_total_ytd[meses_selecionados].copy()
-    df_realizado_melt_abas = df_realizado_melt_abas.sum().reset_index()
+    id_base_realizado_area = realizado_por_area_ids.get(area_selecionada)
+    if id_base_realizado_area:
+        df_realizado_area = carregar_database_notion(id_base_realizado_area)
+
+        # Filtra colunas selecionadas
+        df_realizado_area[meses_selecionados] = df_realizado_area[meses_selecionados].apply(pd.to_numeric, errors="coerce").fillna(0)
+
+        df_realizado_melt_abas = df_realizado_area[meses_selecionados].sum().reset_index()
+        df_realizado_melt_abas.columns = ["Mês", "Realizado"]
+        df_realizado_melt_abas["Mês"] = pd.Categorical(df_realizado_melt_abas["Mês"], categories=meses_selecionados, ordered=True)
+        df_realizado_melt_abas = df_realizado_melt_abas.sort_values("Mês")
+
+        # Adiciona linha de tendência no gráfico
+        fig.add_scatter(
+            x=df_realizado_melt_abas["Mês"],
+            y=df_realizado_melt_abas["Realizado"],
+            mode="lines+markers",
+            name="Realizado",
+            line=dict(color="grey", width=3),
+            marker=dict(size=6, color="black")
+        )
+        
     df_realizado_melt_abas.columns = ["Mês", "Realizado"]
     df_realizado_melt_abas["Mês"] = pd.Categorical(df_realizado_melt_abas["Mês"], categories=meses_selecionados, ordered=True)
     df_realizado_melt_abas = df_realizado_melt_abas.sort_values("Mês")
