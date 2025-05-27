@@ -9,16 +9,6 @@ import datetime
 # === 1. Função para gerar o Excel ===
 st.set_page_config(layout="wide")
 
-# Mapeamento entre áreas e IDs das bases por centro de custos
-realizado_por_area_ids = {
-    "MÍDIA E PERFORMANCE": "1d63a12b3962807693e7f2fe59623f0f",
-    "MKT DE CONTEÚDO": "1d63a12b3962800fb208cad6c0b461eb",
-    "MKT DE PRODUTO": "1d63a12b3962801a9707ec550f54d9c5",
-    "GROWTH": "1d63a12b3962807bac16ca40c3b56cf7",
-    "CONTEÚDO": "1d63a12b3962807bac16ca40c3b56cf7",
-    "CX": "1d63a12b3962806ca0e6e073f5317e9f",
-}
-
 
 def formatar_valor_brasileiro(valor):
     """Formata um valor numérico para o padrão de moeda brasileira R$ 1.234,56."""
@@ -857,19 +847,33 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
 
     fig.update_layout(barmode="relative")  # mantém as barras empilhadas
 
-    id_base_realizado_area = realizado_por_area_ids.get(area_selecionada)
-    if id_base_realizado_area:
-        df_realizado_area = carregar_database_notion(id_base_realizado_area)
+    df_realizado_total_ytd = carregar_realizado_ytd()
 
-        # Filtra colunas selecionadas
-        df_realizado_area[meses_selecionados] = df_realizado_area[meses_selecionados].apply(pd.to_numeric, errors="coerce").fillna(0)
+        # Garante que meses_selecionados contenha apenas colunas válidas existentes em df_realizado_total_ytd
+    valid_meses = [m for m in meses_selecionados if m in df_realizado_total_ytd.columns]
 
-        df_realizado_melt_abas = df_realizado_area[meses_selecionados].sum().reset_index()
-        df_realizado_melt_abas.columns = ["Mês", "Realizado"]
-        df_realizado_melt_abas["Mês"] = pd.Categorical(df_realizado_melt_abas["Mês"], categories=meses_selecionados, ordered=True)
-        df_realizado_melt_abas = df_realizado_melt_abas.sort_values("Mês")
+    # Inicializa df_realizado_melt_abas como um DataFrame vazio com as colunas esperadas
+    df_realizado_melt_abas = pd.DataFrame(columns=["Mês", "Realizado"])
 
-        # Adiciona linha de tendência no gráfico
+    # Prossegue com o cálculo apenas se houver meses válidos
+    if valid_meses:
+        df_temp = df_realizado_total_ytd[valid_meses].copy()
+        df_temp = df_temp.sum().reset_index()
+
+        # Verifica se o DataFrame resultante tem a estrutura esperada (2 colunas)
+        if len(df_temp.columns) == 2:
+            df_realizado_melt_abas = df_temp
+            df_realizado_melt_abas.columns = ["Mês", "Realizado"] # Renomeia as colunas
+            # Define a ordem correta dos meses usando os meses válidos
+            df_realizado_melt_abas["Mês"] = pd.Categorical(df_realizado_melt_abas["Mês"], categories=valid_meses, ordered=True)
+            df_realizado_melt_abas = df_realizado_melt_abas.sort_values("Mês")
+        else:
+            st.warning(f"Não foi possível calcular o 'Realizado' agregado para os meses selecionados devido à estrutura inesperada dos dados após a soma.")
+    else:
+        st.info("Nenhum mês válido selecionado ou dados 'Realizado YTD' disponíveis para os meses selecionados.")
+
+    # Adiciona o gráfico de dispersão apenas se houver dados em df_realizado_melt_abas
+    if not df_realizado_melt_abas.empty:
         fig.add_scatter(
             x=df_realizado_melt_abas["Mês"],
             y=df_realizado_melt_abas["Realizado"],
@@ -878,20 +882,10 @@ if area_selecionada not in ["Calendário de Projetos", "2024"]:
             line=dict(color="grey", width=3),
             marker=dict(size=6, color="black")
         )
-        
-    df_realizado_melt_abas.columns = ["Mês", "Realizado"]
-    df_realizado_melt_abas["Mês"] = pd.Categorical(df_realizado_melt_abas["Mês"], categories=meses_selecionados, ordered=True)
-    df_realizado_melt_abas = df_realizado_melt_abas.sort_values("Mês")
+    # else: # Opcional: Informar que o scatter não foi adicionado
+    #     st.info("Gráfico de dispersão 'Realizado' não adicionado por falta de dados.")
 
-    fig.add_scatter(
-        x=df_realizado_melt_abas["Mês"],
-        y=df_realizado_melt_abas["Realizado"],
-        mode="lines+markers",
-        name="Realizado",
-        line=dict(color="grey", width=3),
-        marker=dict(size=6, color="black")
-    )
-
+    # Continua com st.plotly_chart(fig, ...)
     st.plotly_chart(fig, use_container_width=True)
 
 if area_selecionada not in ["2024", "Calendário de Projetos"]:
